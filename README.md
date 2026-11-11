@@ -1,17 +1,28 @@
-# STAYOS — Luxury Hotel Guest Experience
+# STAYOS — Luxury Hotel Guest Experience (Pilot demo)
 
-Hotel guest portal and receptionist dashboard, with QR guest passes, activities, room service, orders, room folio, and chat.
+Mobile guest portal + hotel admin with QR access passes, room amenities, activities, menu ordering, room folio, and reception chat.
 
-The app source is being prepared for Railway. **Demo only; not yet approved for real guest data.**
+## Run locally
 
-### Run locally
+```bash
+pip install -r requirements.txt
+python server.py
+```
 
-`pip install -r requirements.txt`
+Open http://localhost:8765. Default local demo password: `stayos-demo` (**never use in production**).
 
-`python server.py`
+## Deploy on Railway
 
-### Deploy
+See [DEPLOYMENT.md](DEPLOYMENT.md). Provide a strong password via the `STAYOS_ADMIN_PASSWORD` environment variable.
 
-See `DEPLOYMENT.md` after uploading the application files. Configure a strong `STAYOS_ADMIN_PASSWORD`, HTTPS public URL, and persistent storage volume for `/data`.
+## Testing
 
-**Never commit** real guest databases (`stay.db`), `.env`, credentials, or payment information. The default local password `stayos-demo` must never be used publicly.
+```bash
+python tests/verify_api.py
+python tests/verify_v21.py
+python tests/verify_v22.py
+```
+
+## Safety
+
+Demonstration software only. Keep the repository private for now. No real guest records or financial data should be stored until independent security and reliability reviews.

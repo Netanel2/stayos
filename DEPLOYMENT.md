@@ -1,12 +1,13 @@
-# Railway deployment instructions
+# STAYOS — Railway pilot deployment
 
-This is a **pilot demo**, not production software for actual guests.
+**Not yet certified for use with real guest information or actual payment collection.**
 
-1. Upload all app files to the repository root (server.py, requirements.txt, static/, tests/).
-2. Railway: **New Project → Deploy from GitHub** → select `Netanel2/stayos`.
-3. Add persistent volume at `/data`.
-4. Add Railway Variables: `STAYOS_DB=/data/stay.db`, `STAYOS_UPLOAD_DIR=/data/uploads`, `STAYOS_ADMIN_PASSWORD` (long random secret), and `STAYOS_COOKIE_SECURE=1`.
-5. Generate an HTTPS domain in Railway Networking and set `STAYOS_GUEST_BASE_URL` to that complete URL.
-6. Redeploy; check QR, chat, requests, order folio and persistence across restart.
+1. Upload the *contents* of this folder to your private GitHub repository, retaining the `static/` and `tests/` directories. Do **not** upload `stay.db`, `.env`, credentials or exported customer information.
+2. Railway → New Project → Deploy from GitHub → select repository.
+3. Railway → Storage → add **persistent volume mounted at `/data`** (required to retain bookings and chat).
+4. Railway → Variables → set `STAYOS_DB=/data/stay.db`, `STAYOS_UPLOAD_DIR=/data/uploads`, `STAYOS_ADMIN_PASSWORD=<new unique long password>`, `STAYOS_COOKIE_SECURE=1`.
+5. Railway → Networking → Generate Domain. Then set `STAYOS_GUEST_BASE_URL=https://YOUR-DOMAIN.up.railway.app`. Redeploy.
+6. Test staff sign-in and QR from a separate browser/mobile network; create a stay and verify a request and chat message reach admin. Restart the service, confirm records/images persist.
+7. Before deploying for real guests: conduct security/privacy assessment, add backup/restore and monitoring, access isolation for different hotels, durable auth sessions and an incident-response plan.
 
-Keep repo **private**, do not upload stay.db or .env, and do not use real guest data before security review. Database and uploaded assets need backups.
+Railway usage is billed according to plan and consumption. The code currently supports a **single demo hotel** and uses SQLite, not a multi-tenant production backend.

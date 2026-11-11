@@ -1,0 +1,17 @@
+# Sensitive configuration and guest data
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+stay.db
+static/assets/hotel-*.webp
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+Thumbs.db

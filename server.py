@@ -25,7 +25,7 @@ ALL_PERMS=['guests','requests','orders','folio','chat','rooms','menu','activitie
 VALID_PERMS=set(ALL_PERMS+[mode+':'+p for p in ALL_PERMS for mode in ('view','edit')])
 FIELDS={
  'room_types':{'name_en':'str','name_he':'str','description_en':'text','description_he':'text','size':'str','max_guests':'int','image':'image','active':'bool'},
- 'rooms':{'room':'str','room_type_id':'int','floor':'str','notes':'text','active':'bool'},
+ 'rooms':{'room':'str','room_type_id':'int','floor':'str','notes':'text','image':'image','active':'bool'},
  'menu':{'name_en':'str','name_he':'str','description_en':'text','description_he':'text','category':'str','price_cents':'money','image':'image','active':'bool'},
  'activities':{'name_en':'str','name_he':'str','description_en':'text','description_he':'text','starts':'date','ends':'date','location':'str','capacity':'int','price_cents':'money','image':'image','active':'bool'},
  'amenities':{'name_en':'str','name_he':'str','basis':'str','period':'str','quota':'int','image':'image','active':'bool'},
@@ -82,7 +82,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,hotel_id INTEGER REFERENCES hotels(id),username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,display_name TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN('owner','manager','staff')),permissions TEXT NOT NULL DEFAULT '[]',active INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),expires TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS room_types(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),name_en TEXT NOT NULL DEFAULT '',name_he TEXT NOT NULL DEFAULT '',description_en TEXT NOT NULL DEFAULT '',description_he TEXT NOT NULL DEFAULT '',size TEXT NOT NULL DEFAULT '',max_guests INTEGER NOT NULL DEFAULT 2,image TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);
-        CREATE TABLE IF NOT EXISTS rooms(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),room TEXT NOT NULL,room_type_id INTEGER NOT NULL REFERENCES room_types(id),floor TEXT NOT NULL DEFAULT '',notes TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1,UNIQUE(hotel_id,room));
+        CREATE TABLE IF NOT EXISTS rooms(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),room TEXT NOT NULL,room_type_id INTEGER NOT NULL REFERENCES room_types(id),floor TEXT NOT NULL DEFAULT '',notes TEXT NOT NULL DEFAULT '',image TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1,UNIQUE(hotel_id,room));
         CREATE TABLE IF NOT EXISTS menu(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),name_en TEXT NOT NULL DEFAULT '',name_he TEXT NOT NULL DEFAULT '',description_en TEXT NOT NULL DEFAULT '',description_he TEXT NOT NULL DEFAULT '',category TEXT NOT NULL DEFAULT 'food',price_cents INTEGER NOT NULL DEFAULT 0,image TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),name_en TEXT NOT NULL DEFAULT '',name_he TEXT NOT NULL DEFAULT '',description_en TEXT NOT NULL DEFAULT '',description_he TEXT NOT NULL DEFAULT '',starts TEXT NOT NULL DEFAULT '',ends TEXT NOT NULL DEFAULT '',location TEXT NOT NULL DEFAULT '',capacity INTEGER NOT NULL DEFAULT 10,price_cents INTEGER NOT NULL DEFAULT 0,image TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS amenities(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),name_en TEXT NOT NULL DEFAULT '',name_he TEXT NOT NULL DEFAULT '',basis TEXT NOT NULL DEFAULT 'room',period TEXT NOT NULL DEFAULT 'daily',quota INTEGER NOT NULL DEFAULT 2,image TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);
@@ -91,7 +91,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),amenity_id INTEGER NOT NULL REFERENCES amenities(id),qty INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'new',created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS food_orders(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),area TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'new',total_cents INTEGER NOT NULL,request_key TEXT UNIQUE NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS food_lines(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),order_id INTEGER NOT NULL REFERENCES food_orders(id),product_id INTEGER NOT NULL REFERENCES menu(id),name TEXT NOT NULL,qty INTEGER NOT NULL,price_cents INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),activity_id INTEGER NOT NULL REFERENCES activities(id),qty INTEGER NOT NULL,created TEXT NOT NULL,UNIQUE(stay_id,activity_id));
+        CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),activity_id INTEGER NOT NULL REFERENCES activities(id),qty INTEGER NOT NULL,created TEXT NOT NULL,cancelled_at TEXT,UNIQUE(stay_id,activity_id));
         CREATE TABLE IF NOT EXISTS folio(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),source TEXT NOT NULL,reference_id INTEGER NOT NULL,description TEXT NOT NULL,amount_cents INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'open',created TEXT NOT NULL,paid_at TEXT,UNIQUE(hotel_id,source,reference_id));
         CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),sender TEXT NOT NULL,body TEXT NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,hotel_id INTEGER REFERENCES hotels(id),user_id INTEGER REFERENCES users(id),action TEXT NOT NULL,entity TEXT NOT NULL,entity_id TEXT NOT NULL,details TEXT NOT NULL,created TEXT NOT NULL);
@@ -100,6 +100,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_messages_hotel ON messages(hotel_id,stay_id,id);
         CREATE INDEX IF NOT EXISTS idx_folio_hotel ON folio(hotel_id,stay_id,status);
         ''')
+        if 'image' not in {row['name'] for row in c.execute('PRAGMA table_info(rooms)')}:
+            c.execute("ALTER TABLE rooms ADD COLUMN image TEXT NOT NULL DEFAULT ''")
+        if 'cancelled_at' not in {row['name'] for row in c.execute('PRAGMA table_info(bookings)')}:
+            c.execute('ALTER TABLE bookings ADD COLUMN cancelled_at TEXT')
         owner=c.execute('SELECT * FROM users WHERE role="owner" LIMIT 1').fetchone()
         if not owner:
             c.execute('INSERT INTO users(hotel_id,username,password_hash,display_name,role,permissions,created) VALUES(NULL,?,?,?,?,?,?)',('owner',hash_pass(OWNER_PASSWORD),'STAYOS Owner','owner',json.dumps(ALL_PERMS),utcnow()))
@@ -134,7 +138,7 @@ class Bad(Exception):
     def __init__(self,msg,status=400):self.msg=str(msg);self.status=status
 
 class Handler(BaseHTTPRequestHandler):
-    server_version='STAYOS/3.0'
+    server_version='STAYOS/3.2'
     def log_message(self,fmt,*args): print('HTTP',self.address_string(),fmt%args,flush=True)
     def send_bytes(self,data,content_type='application/octet-stream',status=200,extra=None):
         active_conn=CURRENT_CONN.get()
@@ -213,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
         mime=mimetypes.guess_type(str(fn))[0] or 'application/octet-stream'
         self.send_bytes(fn.read_bytes(),mime)
     def get(self,path,q):
-        if path=='/health':return self.ok({'ok':True,'version':'3.0.0'})
+        if path=='/health':return self.ok({'ok':True,'version':'3.2.0'})
         if path.startswith('/media/'):
             m=re.fullmatch(r'/media/(\d+)/([0-9a-f]{24}\.webp)',path)
             if not m:raise Bad('Not found',404)
@@ -257,10 +261,12 @@ class Handler(BaseHTTPRequestHandler):
                           'background_color':'#f8f6f1','icons':[{'src':'/static/assets/app-icon-192.png','sizes':'192x192','type':'image/png','purpose':'any maskable'},{'src':'/static/assets/app-icon-512.png','sizes':'512x512','type':'image/png','purpose':'any maskable'}]}
                         return self.send_bytes(json.dumps(manifest).encode(),'application/manifest+json; charset=utf-8')
                     if action=='session':
-                        room=c.execute('SELECT rt.* FROM rooms r JOIN room_types rt ON rt.id=r.room_type_id WHERE r.id=? AND r.hotel_id=?',(s['room_id'],hid)).fetchone()
-                        return self.ok({'stay':{'room':s['room'],'guests':s['guests'],'ends':s['ends'],'zones':json.loads(s['zones'])},'room_type':jsonobj(room)})
+                        room=c.execute('SELECT rt.*,r.image AS physical_room_image FROM rooms r JOIN room_types rt ON rt.id=r.room_type_id WHERE r.id=? AND r.hotel_id=?',(s['room_id'],hid)).fetchone()
+                        room_data=dict(room) if room else None
+                        if room_data and room_data.get('physical_room_image'):room_data['image']=room_data['physical_room_image']
+                        return self.ok({'stay':{'room':s['room'],'guests':s['guests'],'ends':s['ends'],'zones':json.loads(s['zones'])},'room_type':room_data})
                     if action=='my':
-                        return self.ok({'requests':[dict(x) for x in c.execute('''SELECT q.*,a.name_en,a.name_he FROM requests q JOIN amenities a ON a.id=q.amenity_id WHERE q.hotel_id=? AND q.stay_id=? ORDER BY q.id DESC''',(hid,s['id']))], 'orders':[dict(x) for x in c.execute('SELECT * FROM food_orders WHERE hotel_id=? AND stay_id=? ORDER BY id DESC',(hid,s['id']))], 'folio':[dict(x) for x in c.execute('SELECT * FROM folio WHERE hotel_id=? AND stay_id=? ORDER BY id DESC',(hid,s['id']))], 'bookings':[dict(x) for x in c.execute('SELECT b.*,a.name_en,a.name_he FROM bookings b JOIN activities a ON a.id=b.activity_id WHERE b.hotel_id=? AND b.stay_id=?',(hid,s['id']))]})
+                        return self.ok({'requests':[dict(x) for x in c.execute('''SELECT q.*,a.name_en,a.name_he FROM requests q JOIN amenities a ON a.id=q.amenity_id WHERE q.hotel_id=? AND q.stay_id=? ORDER BY q.id DESC''',(hid,s['id']))], 'orders':[dict(x) for x in c.execute('SELECT * FROM food_orders WHERE hotel_id=? AND stay_id=? ORDER BY id DESC',(hid,s['id']))], 'folio':[dict(x) for x in c.execute('SELECT * FROM folio WHERE hotel_id=? AND stay_id=? ORDER BY id DESC',(hid,s['id']))], 'bookings':[dict(x) for x in c.execute('SELECT b.*,a.name_en,a.name_he FROM bookings b JOIN activities a ON a.id=b.activity_id WHERE b.hotel_id=? AND b.stay_id=? AND b.cancelled_at IS NULL',(hid,s['id']))]})
                     if action=='chat':return self.ok([dict(m) for m in c.execute('SELECT id,sender,body,created FROM messages WHERE hotel_id=? AND stay_id=? ORDER BY id LIMIT 500',(hid,s['id']))])
                     raise Bad('Not found',404)
                 if not rest.startswith('manage/'):raise Bad('Not found',404)
@@ -281,6 +287,93 @@ class Handler(BaseHTTPRequestHandler):
                         for k,required in [('open_folio','folio'),('stays','guests'),('pending_requests','requests'),('requests','requests'),('pending_orders','orders'),('orders','orders'),('latest_guest_message','chat'),('rooms','rooms'),('activities','activities')]:
                             if not (required in perm or 'view:'+required in perm or 'edit:'+required in perm):dash[k]=None
                     return self.ok(dash)
+                if part=='events':
+                    # Permission-scoped activity feed. Unlike pending counters, an event ID
+                    # stays new even if a different item was marked completed.
+                    u=self.require(c,None,hid)
+                    perms=set(json.loads(u['permissions'])) if u['role']=='staff' else set(ALL_PERMS)
+                    def can_view(permission):
+                        return any(p in perms for p in (permission,'view:'+permission,'edit:'+permission))
+                    feeds=[]
+                    if can_view('requests'):
+                        feeds += [dict(row)|{'type':'request','kind':'Guest service','label':row['item']}
+                                  for row in c.execute('''SELECT q.id,q.created,r.room,a.name_en AS item,q.qty,q.status
+                                      FROM requests q JOIN stays s ON s.id=q.stay_id
+                                      JOIN rooms r ON r.id=s.room_id JOIN amenities a ON a.id=q.amenity_id
+                                      WHERE q.hotel_id=? ORDER BY q.id DESC LIMIT 30''',(hid,))]
+                    if can_view('orders'):
+                        feeds += [dict(row)|{'type':'order','kind':'Food order','label':row['label']}
+                                  for row in c.execute('''SELECT o.id,o.created,r.room,o.area,o.detail,o.note,o.status,o.total_cents,
+                                      o.area || CASE WHEN o.detail != '' THEN ' · ' || o.detail ELSE '' END AS label
+                                      FROM food_orders o JOIN stays s ON s.id=o.stay_id
+                                      JOIN rooms r ON r.id=s.room_id
+                                      WHERE o.hotel_id=? ORDER BY o.id DESC LIMIT 30''',(hid,))]
+                    if can_view('activities'):
+                        feeds += [dict(row)|{'type':'booking','kind':'Activity booking','label':row['label']}
+                                  for row in c.execute('''SELECT b.id,b.created,r.room,a.name_en AS label,b.qty,a.price_cents
+                                      FROM bookings b JOIN stays s ON s.id=b.stay_id
+                                      JOIN rooms r ON r.id=s.room_id JOIN activities a ON a.id=b.activity_id
+                                      WHERE b.hotel_id=? AND b.cancelled_at IS NULL ORDER BY b.id DESC LIMIT 30''',(hid,))]
+                    if can_view('chat'):
+                        feeds += [dict(row)|{'type':'message','kind':'Guest message','label':row['label']}
+                                  for row in c.execute('''SELECT m.id,m.created,r.room,substr(m.body,1,75) AS label
+                                      FROM messages m JOIN stays s ON s.id=m.stay_id
+                                      JOIN rooms r ON r.id=s.room_id WHERE m.hotel_id=? AND m.sender='guest'
+                                      ORDER BY m.id DESC LIMIT 30''',(hid,))]
+                    # Resolve order line summaries without exposing another hotel's items.
+                    for event in feeds:
+                        if event['type']=='order':
+                            event['items']=[dict(line) for line in c.execute('SELECT name,qty FROM food_lines WHERE hotel_id=? AND order_id=? ORDER BY id',(hid,event['id']))]
+                            event['label']=', '.join(str(x['qty'])+'× '+x['name'] for x in event['items'])
+                        elif event['type']=='request':event['label']=str(event['qty'])+'× '+event['label']
+                        elif event['type']=='booking':event['label']=str(event['qty'])+'× '+event['label']
+                    return self.ok(sorted(feeds,key=lambda e:(e['created'],e['id']),reverse=True)[:80])
+                if part=='room-history':
+                    u=self.require(c,None,hid)
+                    perms=set(json.loads(u['permissions'])) if u['role']=='staff' else set(ALL_PERMS)
+                    permitted=lambda permission: any(p in perms for p in (permission,'view:'+permission,'edit:'+permission))
+                    if not any(permitted(p) for p in ('guests','requests','orders','activities','chat','folio')):
+                        raise Bad('Permission denied',403)
+                    room_names=[str(r['room']) for r in c.execute('SELECT room FROM rooms WHERE hotel_id=? ORDER BY room',(hid,))]
+                    room=str(q.get('room',[''])[0]).strip()
+                    if len(room)>40:raise Bad('Invalid room',400)
+                    if not room:return self.ok({'rooms':room_names,'room':None,'entries':[],'stays':[]})
+                    room_row=c.execute('SELECT id,room FROM rooms WHERE hotel_id=? AND room=?',(hid,room)).fetchone()
+                    if not room_row:return self.ok({'rooms':room_names,'room':room,'entries':[],'stays':[]})
+                    room_id=room_row['id']
+                    stays=[dict(row) for row in c.execute('SELECT id,guests,start,ends,revoked FROM stays WHERE hotel_id=? AND room_id=? ORDER BY id DESC',(hid,room_id))] if permitted('guests') else []
+                    entries=[]
+                    if permitted('orders'):
+                        for row in c.execute('''SELECT o.id,o.stay_id,o.created,o.area,o.detail,o.note,o.status,o.total_cents
+                           FROM food_orders o JOIN stays s ON s.id=o.stay_id WHERE o.hotel_id=? AND s.hotel_id=? AND s.room_id=? ORDER BY o.id DESC LIMIT 300''',(hid,hid,room_id)):
+                            e=dict(row)
+                            e.update(type='order',items=[dict(x) for x in c.execute('SELECT name,qty,price_cents FROM food_lines WHERE hotel_id=? AND order_id=? ORDER BY id',(hid,e['id']))])
+                            entries.append(e)
+                    if permitted('requests'):
+                        entries += [dict(row)|{'type':'request'} for row in c.execute('''SELECT q.id,q.stay_id,q.created,q.qty,q.status,a.name_en AS name_en,a.name_he AS name_he
+                            FROM requests q JOIN stays s ON s.id=q.stay_id JOIN amenities a ON a.id=q.amenity_id
+                            WHERE q.hotel_id=? AND s.hotel_id=? AND s.room_id=? ORDER BY q.id DESC LIMIT 300''',(hid,hid,room_id))]
+                    if permitted('activities'):
+                        entries += [dict(row)|{'type':'booking','status':'cancelled' if row['cancelled_at'] else 'booked'} for row in c.execute('''SELECT b.id,b.stay_id,b.created,b.qty,b.cancelled_at,a.name_en AS name_en,a.name_he AS name_he,a.starts,a.location,a.price_cents
+                            FROM bookings b JOIN stays s ON s.id=b.stay_id JOIN activities a ON a.id=b.activity_id
+                            WHERE b.hotel_id=? AND s.hotel_id=? AND s.room_id=? ORDER BY b.id DESC LIMIT 300''',(hid,hid,room_id))]
+                    if permitted('chat'):
+                        entries += [dict(row)|{'type':'message'} for row in c.execute('''SELECT m.id,m.stay_id,m.created,m.body,m.sender FROM messages m JOIN stays s ON s.id=m.stay_id
+                            WHERE m.hotel_id=? AND s.hotel_id=? AND s.room_id=? ORDER BY m.id DESC LIMIT 300''',(hid,hid,room_id))]
+                    if permitted('folio'):
+                        entries += [dict(row)|{'type':'charge'} for row in c.execute('''SELECT f.id,f.stay_id,f.created,f.description,f.amount_cents,f.status,f.source
+                            FROM folio f JOIN stays s ON s.id=f.stay_id
+                            WHERE f.hotel_id=? AND s.hotel_id=? AND s.room_id=? ORDER BY f.id DESC LIMIT 300''',(hid,hid,room_id))]
+                    entries.sort(key=lambda e:(e['created'],e['id']),reverse=True)
+                    return self.ok({'rooms':room_names,'room':room,'entries':entries[:600],'stays':stays})
+                if part=='bookings':
+                    self.require(c,'activities',hid)
+                    return self.ok([dict(row) for row in c.execute('''SELECT b.id,b.created,b.qty,b.activity_id,
+                            a.name_en AS activity,a.name_he AS activity_he,a.starts,
+                            r.room,b.qty * a.price_cents AS total_cents,b.cancelled_at
+                            FROM bookings b JOIN activities a ON a.id=b.activity_id
+                            JOIN stays s ON s.id=b.stay_id JOIN rooms r ON r.id=s.room_id
+                            WHERE b.hotel_id=? ORDER BY b.id DESC''',(hid,))])
                 if part=='stays':
                     self.require(c,'guests',hid)
                     return self.ok([dict(s) for s in c.execute('SELECT s.id,s.hotel_id,s.room_id,r.room,s.guests,s.start,s.ends,s.zones,s.revoked,s.created,s.token FROM stays s JOIN rooms r ON s.room_id=r.id WHERE s.hotel_id=? ORDER BY s.id DESC',(hid,))])
@@ -293,7 +386,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.ok([dict(o)|{'lines':[dict(x) for x in c.execute('SELECT name,qty,price_cents FROM food_lines WHERE hotel_id=? AND order_id=?',(hid,o['id']))]} for o in rows])
                 if part=='folio':
                     self.require(c,'folio',hid)
-                    return self.ok([dict(x) for x in c.execute('SELECT f.*,r.room FROM folio f JOIN stays s ON s.id=f.stay_id JOIN rooms r ON r.id=s.room_id WHERE f.hotel_id=? ORDER BY f.id DESC',(hid,))])
+                    return self.ok([dict(x) for x in c.execute('SELECT f.*,r.room,fo.area AS delivery_area,fo.detail AS delivery_detail,fo.note AS delivery_note FROM folio f JOIN stays s ON s.id=f.stay_id JOIN rooms r ON r.id=s.room_id LEFT JOIN food_orders fo ON fo.hotel_id=f.hotel_id AND fo.id=f.reference_id AND f.source="food" WHERE f.hotel_id=? ORDER BY f.id DESC',(hid,))])
                 if part=='chat':
                     self.require(c,'chat',hid)
                     stay_id=int(q.get('stay_id',[0])[0])
@@ -466,22 +559,32 @@ class Handler(BaseHTTPRequestHandler):
                     aid=int(b.get('activity_id',0));qty=int(b.get('qty',1))
                     a=c.execute('SELECT * FROM activities WHERE hotel_id=? AND id=? AND active=1',(hid,aid)).fetchone()
                     if not a or qty<1 or qty>s['guests'] or parse_dt(a['starts'])<=datetime.now(timezone.utc):raise Bad('Invalid booking')
-                    used=c.execute('SELECT COALESCE(SUM(qty),0) FROM bookings WHERE hotel_id=? AND activity_id=?',(hid,aid)).fetchone()[0]
+                    used=c.execute('SELECT COALESCE(SUM(qty),0) FROM bookings WHERE hotel_id=? AND activity_id=? AND cancelled_at IS NULL',(hid,aid)).fetchone()[0]
                     if used+qty>a['capacity']:raise Bad('No places available')
-                    c.execute('INSERT INTO bookings(hotel_id,stay_id,activity_id,qty,created) VALUES(?,?,?,?,?)',(hid,s['id'],aid,qty,utcnow()))
-                    bid=c.execute('SELECT last_insert_rowid()').fetchone()[0]
+                    previous=c.execute('SELECT * FROM bookings WHERE hotel_id=? AND stay_id=? AND activity_id=?',(hid,s['id'],aid)).fetchone()
+                    if previous and previous['cancelled_at'] is None:raise Bad('Already booked this activity',409)
+                    if previous:
+                        bid=previous['id']
+                        c.execute('UPDATE bookings SET qty=?,created=?,cancelled_at=NULL WHERE id=? AND hotel_id=?',(qty,utcnow(),bid,hid))
+                    else:
+                        c.execute('INSERT INTO bookings(hotel_id,stay_id,activity_id,qty,created) VALUES(?,?,?,?,?)',(hid,s['id'],aid,qty,utcnow()))
+                        bid=c.execute('SELECT last_insert_rowid()').fetchone()[0]
                     total=qty*a['price_cents']
-                    if total:c.execute('INSERT INTO folio(hotel_id,stay_id,source,reference_id,description,amount_cents,created) VALUES(?,?,?,?,?,?,?)',(hid,s['id'],'activity',bid,a['name_en']+' × '+str(qty),total,utcnow()))
+                    if total:
+                        if previous:
+                            c.execute('UPDATE folio SET description=?,amount_cents=?,status="open",paid_at=NULL,created=? WHERE hotel_id=? AND source="activity" AND reference_id=?',(a['name_en']+' × '+str(qty),total,utcnow(),hid,bid))
+                        else:
+                            c.execute('INSERT INTO folio(hotel_id,stay_id,source,reference_id,description,amount_cents,created) VALUES(?,?,?,?,?,?,?)',(hid,s['id'],'activity',bid,a['name_en']+' × '+str(qty),total,utcnow()))
                     return self.ok({'id':bid},201)
                 if action=='cancel_booking':
                     if 'activities' not in zones:raise Bad('Activities disabled',403)
                     bid=int(b.get('booking_id',0))
                     bk=c.execute('SELECT * FROM bookings WHERE hotel_id=? AND stay_id=? AND id=?',(hid,s['id'],bid)).fetchone()
-                    if not bk:raise Bad('Booking not found',404)
+                    if not bk or bk['cancelled_at']:raise Bad('Booking not found',404)
                     paid=c.execute('SELECT 1 FROM folio WHERE hotel_id=? AND source="activity" AND reference_id=? AND status="paid"',(hid,bid)).fetchone()
                     if paid:raise Bad('Paid activity needs manual refund at reception')
                     c.execute('UPDATE folio SET status="void" WHERE hotel_id=? AND source="activity" AND reference_id=?',(hid,bid))
-                    c.execute('DELETE FROM bookings WHERE hotel_id=? AND id=?',(hid,bid))
+                    c.execute('UPDATE bookings SET cancelled_at=? WHERE hotel_id=? AND id=?',(utcnow(),hid,bid))
                     return self.ok({'ok':True})
                 if action=='chat':
                     if 'chat' not in zones:raise Bad('Chat disabled for this pass',403)
@@ -526,6 +629,27 @@ class Handler(BaseHTTPRequestHandler):
                 c.execute('INSERT INTO stays(hotel_id,room_id,guests,start,ends,zones,token,created) VALUES(?,?,?,?,?,?,?,?)',(hid,rid,guests,start.isoformat(),ends.isoformat(),json.dumps(zones),token,utcnow()))
                 sid=c.execute('SELECT last_insert_rowid()').fetchone()[0];audit(c,hid,u['id'],'create','stay',sid)
                 return self.ok({'id':sid,'url':self.url('/h/'+slug+'/guest?token='+quote(token)),'token':token},201)
+            if part=='demo-pass':
+                self.require(c,'guests',hid,write=True)
+                if not h['demo']:raise Bad('Demo guest access is available only for concept hotels',403)
+                now=datetime.now(timezone.utc)
+                for old in c.execute('''SELECT s.* FROM stays s JOIN rooms r ON r.id=s.room_id
+                                        WHERE s.hotel_id=? AND r.room='101' AND s.revoked=0
+                                        ORDER BY s.id DESC''',(hid,)).fetchall():
+                    if parse_dt(old['start'])<=now<parse_dt(old['ends']) and 'orders' in json.loads(old['zones']):
+                        return self.ok({'url':self.url('/h/'+slug+'/guest?token='+quote(old['token'])),
+                                        'room':'101'})
+                room=c.execute("SELECT id FROM rooms WHERE hotel_id=? AND room='101' AND active=1",(hid,)).fetchone()
+                if not room:raise Bad('Create demo room 101 first',400)
+                c.execute('UPDATE stays SET revoked=1 WHERE hotel_id=? AND room_id=?',(hid,room['id']))
+                token=secrets.token_urlsafe(32)
+                c.execute('''INSERT INTO stays(hotel_id,room_id,guests,start,ends,zones,token,created)
+                             VALUES(?,?,?,?,?,?,?,?)''',(hid,room['id'],2,
+                             (now-timedelta(minutes=5)).isoformat(),(now+timedelta(days=14)).isoformat(),
+                             json.dumps(['requests','orders','activities','chat']),token,utcnow()))
+                sid=c.execute('SELECT last_insert_rowid()').fetchone()[0]
+                audit(c,hid,self.user(c)['id'],'demo_pass','stay',sid)
+                return self.ok({'url':self.url('/h/'+slug+'/guest?token='+quote(token)),'room':'101'},201)
             if part=='staff':
                 u=self.require(c,None,hid,manager_only=True)
                 username=str(b.get('username','')).lower().strip();name=str(b.get('display_name','')).strip()

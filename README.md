@@ -1,8 +1,18 @@
-# STAYOS v3 — Multi-Hotel Pilot Platform
+> **v3.2:** See [`UPGRADE_v3.2_HE.md`](UPGRADE_v3.2_HE.md) for live reception alerts, room history, photo replacement and Railway update instructions.
+
+# STAYOS v3.2 — Multi-Hotel Pilot Platform
 
 A premium hotel guest experience platform with a **platform owner console**, **separate hotel management workspaces**, **granular staff permissions**, and **mobile guest portal**.
 
 > **Pilot / demonstration software.** This is not production-certified for real guest data, payment processing, or multiple server replicas. Security, regulatory/privacy, accessibility, support and operational reviews are required before an actual hotel rollout.
+
+## What changed in v3.1
+
+- **Working live ordering demo:** the Bayview workspace now has **Try guest demo** for logged-in authorized staff. It opens an active time-limited guest QR session. Public previews remain read-only so anonymous visitors cannot create charges.
+- **Guest cart fixed:** changing quantities does not reset the delivery destination, table/sunbed or notes; location details are required away from the room; the button clearly reflects whether the guest pass allows orders.
+- **Reception event feed:** requests, food orders, activity bookings and guest messages are recorded in a permission-scoped live feed polled every 10 seconds while the page is open. In-app notifications are automatic; optional sound / browser notifications must be enabled by the user. This is **not background Push**.
+- **Activity Bookings:** new reception view; registrations and prices reach the desk and room folio.
+- **Coverage:** `python tests/test_platform.py`, `python tests/test_notifications.py`, `python tests/test_guest_flows.py`, `python tests/test_browser.py`.
 
 ## What's inside
 
@@ -53,7 +63,7 @@ python tests/test_platform.py
 python tests/test_browser.py
 ```
 
-The browser test uses Chromium from `/usr/bin/chromium` and a local HTTP test proxy to accommodate this build environment; adjust if running elsewhere. The API suite currently covers 41 integration cases, including view-only versus editing, cross-hotel access checks, reservations, charges, and access revocation. A Chromium UI smoke test passed on desktop/mobile-width layouts, but no real mobile device installation or full accessibility audit has been performed.
+The browser test uses Chromium from `/usr/bin/chromium` and a local HTTP test proxy to accommodate this build environment; adjust if running elsewhere. The original API suite covers 41 integration cases, with additional notification and interactive guest-flow regressions, including view-only versus editing, cross-hotel access checks, reservations, charges, and access revocation. A Chromium UI smoke test passed on desktop/mobile-width layouts, but no real mobile device installation or full accessibility audit has been performed.
 
 ## Security & limitations
 

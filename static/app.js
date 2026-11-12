@@ -1,6 +1,6 @@
 'use strict';
 const APP=document.getElementById('app'),TOAST=document.getElementById('toast');
-const state={auth:null,hotels:[],hotel:null,slug:'',tab:'dashboard',guest:null,token:'',preview:false,lang:'he',guestTab:'home',catalog:{},staff:[],selectedThread:0,cart:{},assets:[],modal:null,prompt:null,alertsEnabled:false,lastAlertStats:null,lastEventIds:null,lastGuestReplyId:null,receptionSeen:null,roomQuery:'',roomFilter:'',pendingRoomFocus:false};
+const state={auth:null,hotels:[],hotel:null,slug:'',tab:'dashboard',guest:null,token:'',preview:false,lang:'he',guestTab:'home',catalog:{},staff:[],selectedThread:0,cart:{},assets:[],modal:null,prompt:null,alertsEnabled:false,lastAlertStats:null,lastEventIds:null,lastGuestReplyId:null,receptionSeen:null,lastAlertSuccess:0,lastAlertFailure:0,roomQuery:'',roomFilter:'',pendingRoomFocus:false};
 const PERMS={guests:['🪪','Reception & QR'],requests:['🛎','Guest Requests'],orders:['🍽','Food Orders'],folio:['💳','Room Folio'],chat:['💬','Guest Messages'],rooms:['🛏','Rooms & Types'],menu:['☕','Menu Catalog'],activities:['🌴','Activities'],amenities:['🧺','Room Amenities'],services:['✨','Hotel Services'],branding:['🎨','Hotel Branding'],media:['📷','Media Library']};
 const CATALOG={room_types:'Room Types',rooms:'Physical Rooms',menu:'Menu Products',activities:'Activities',amenities:'Room Amenities',services:'Hotel Services'};
 const LABEL={name_en:'English name',name_he:'Hebrew name',description_en:'English description',description_he:'Hebrew description',size:'Room size',max_guests:'Max guests',image:'Photo',active:'Visible to guests',room:'Room number',room_type_id:'Room type',floor:'Floor',notes:'Internal notes',category:'Category',price_cents:'Price',starts:'Starts',ends:'Ends',location:'Location',capacity:'Capacity',basis:'Quota basis',period:'Quota period',quota:'Quota per person / room'};
@@ -40,10 +40,18 @@ async function loadHotels(){state.hotels=await api('/api/owner/hotels');}
 async function loadHotelManagement(){await loadPublic();}
 function renderLogin(){document.title='STAYOS · Staff Sign In';APP.innerHTML=`<div class="loginpage"><div class="loginart"><div class="eyebrow" style="color:#eac995">A better stay begins here</div><h1>Hospitality,<br>beautifully connected.</h1><p>Bring your rooms, experiences, service requests and team into one carefully crafted guest experience.</p></div><div class="logincontent"><div class="loginbox">${brand()}<div class="eyebrow" style="margin-top:40px">Secure platform access</div><h1>Welcome back.</h1><p class="subtitle">Sign in to your STAYOS owner or hotel team account.</p><form id="loginForm"><div class="inputgroup"><label for="username">Username</label><input id="username" name="username" required autocomplete="username" placeholder="owner"></div><div class="inputgroup"><label for="password">Password</label><input id="password" type="password" name="password" required autocomplete="current-password" placeholder="Enter your password"></div><button class="btn primary full" type="submit">Sign in securely →</button></form><p class="mini muted">Platform owner: username <strong>owner</strong>, password from Railway variable <code>STAYOS_ADMIN_PASSWORD</code>.</p></div></div></div>`;}
 function shell(name,nav,body){APP.innerHTML=`<div class="layout"><aside class="sidebar">${brand()}<div class="sidebar-label">${esc(name)}</div><nav class="nav">${nav}</nav><div class="sidefoot"><div>${esc(state.auth?.user?.display_name||'')}</div><div class="muted" style="margin:7px 0">${esc(state.auth?.user?.role||'')}</div><button data-action="changePassword" class="btn small" style="width:100%;margin:6px 0">Change password</button><button data-action="logout" class="btn small" style="width:100%">Sign out ↗</button></div></aside><main class="main">${body}</main></div>`;renderModal();}
+async function loadBackupHealth(){
+ const target=document.getElementById('platformBackupStatus');if(!target)return;
+ try{const report=await api('/api/owner/backup-status');const last=report.last||{},success=last.status==='success';
+ const summary=success?('Last backup: '+dateFmt(last.at)+(last.offsite_saved?' · Offsite copy saved':' · Local Volume only')):
+   (last.status==='failed'?'Backup failed · '+esc(last.error||'check server logs'):'No backup completed yet');
+ target.innerHTML=`<div class="panel backup-health ${success&&last.offsite_saved?'backup-ok':'backup-warning'}"><div class="eyebrow">DATA SAFETY · PLATFORM OWNER</div><h3>Backup status</h3><p class="subtitle">${esc(summary)}</p><p class="mini muted">${report.offsite_configured?'Offsite S3 storage configured.':'⚠ Offsite backup is not configured. Railway Volume alone is not disaster recovery.'}</p></div>`;
+ }catch(e){target.textContent='Unable to retrieve backup status';}
+}
 function renderOwner(){document.title='STAYOS · Platform Owner';let nav=`<button class="active">✦ &nbsp; My Hotels</button>`;
  let cards=state.hotels.map(h=>`<article class="hotelcard">${img(h.hero_image)}<div class="inside"><div class="eyebrow">${h.demo?'UNOFFICIAL DEMO':'HOTEL ACCOUNT'}</div><h3>${esc(h.name)}</h3><p class="subtitle mini">${esc(h.location)} · ${esc(h.currency)} · ${h.active?'Active':'Inactive'}</p>${rowActions([`<button class="btn primary small" data-action="openHotel" data-slug="${esc(h.slug)}">Manage hotel →</button>`,`<a class="btn small" href="/h/${encodeURIComponent(h.slug)}/preview" target="_blank" rel="noopener">Guest preview ↗</a>`,`<button class="btn small" data-action="toggleHotel" data-id="${h.id}" data-active="${h.active}">${h.active?'Suspend':'Reactivate'}</button>`])}</div></article>`).join('');
- let body=`<div class="topbar">${pageIntro('STAYOS · PLATFORM OWNER','Your Hotels','Create, configure and oversee each hotel from one secure workspace.')}<button class="btn primary" data-action="newHotel">+ New hotel</button></div><div class="statgrid" style="grid-template-columns:repeat(2,minmax(0,230px))"><div class="stat"><span>Hotel accounts</span><strong>${state.hotels.length}</strong></div><div class="stat"><span>Active hotels</span><strong>${state.hotels.filter(h=>h.active&&!h.demo).length}</strong></div></div><div class="section-gap cards">${cards||empty()}</div>${state.hotels.some(h=>h.demo)?'<div class="notice section-gap">Sample properties are clearly marked. Suspend any concept property before onboarding real guests; create a new hotel account using its actual name, pricing and photos.</div>':''}`;
- shell('Platform owner',nav,body);
+ let body=`<div class="topbar">${pageIntro('STAYOS · PLATFORM OWNER','Your Hotels','Create, configure and oversee each hotel from one secure workspace.')}<button class="btn primary" data-action="newHotel">+ New hotel</button></div><div class="statgrid" style="grid-template-columns:repeat(2,minmax(0,230px))"><div class="stat"><span>Hotel accounts</span><strong>${state.hotels.length}</strong></div><div class="stat"><span>Active hotels</span><strong>${state.hotels.filter(h=>h.active&&!h.demo).length}</strong></div></div><div class="section-gap cards">${cards||empty()}</div><div id="platformBackupStatus" class="section-gap"></div>${state.hotels.some(h=>h.demo)?'<div class="notice section-gap">Sample properties are clearly marked. Suspend any concept property before onboarding real guests; create a new hotel account using its actual name, pricing and photos.</div>':''}`;
+ shell('Platform owner',nav,body);loadBackupHealth();
 }
 function managerNav(){const tabs=[['dashboard','✧','Overview'],['room_history','📚','Room History'],['guests',...PERMS.guests],['requests',...PERMS.requests],['orders',...PERMS.orders],['folio',...PERMS.folio],['chat',...PERMS.chat],['room_types','🛌','Room Types'],['rooms','🚪','Physical Rooms'],['menu',...PERMS.menu],['activities',...PERMS.activities],['bookings','📆','Activity Bookings'],['amenities',...PERMS.amenities],['services',...PERMS.services],['branding',...PERMS.branding],['media',...PERMS.media],['staff','🔐','Team & Access'],['audit','📋','Audit Trail']];return tabs.filter(([id])=>{if(['dashboard'].includes(id))return true;if(id==='room_history')return ['guests','requests','orders','activities','chat','folio'].some(available);if(['staff','audit'].includes(id))return isOwner()||state.auth?.user?.role==='manager';return available(id==='room_types'?'rooms':id==='bookings'?'activities':id);}).map(([id,ico,label])=>`<button class="${state.tab===id?'active':''}" data-action="tab" data-tab="${id}"><span class="ico">${ico}</span>${label}</button>`).join('');}
 function managerHeader(title,sub,extra=''){return `<div class="topbar">${pageIntro(state.hotel?.demo?'UNOFFICIAL CONCEPT DEMO · '+state.hotel?.location:'STAYOS HOTEL MANAGEMENT',title,sub)}<div class="topactions">${extra}<button id="receptionLive" class="btn" data-action="showEvents" aria-live="polite">🔔 Reception feed</button>${state.hotel?.demo&&canEdit('guests')?'<button class="btn primary" data-action="demoGuest">▶ Try guest demo</button>':''}<a class="btn" href="/h/${encodeURIComponent(state.slug)}/preview" target="_blank" rel="noopener">Guest preview ↗</a>${isOwner()?'<button class="btn" data-action="backOwner">All hotels</button>':''}<button class="btn" data-action="alerts">${state.alertsEnabled?'🔔 Alerts on':'🔕 Enable alerts'}</button></div></div>`;}
@@ -86,10 +94,46 @@ function roomFilterUI(){return `<label class="room-filter-label">🔎 Find room 
 function applyRoomFilter(){const value=(state.roomFilter||'').trim().toLowerCase();let count=0;document.querySelectorAll('[data-room-row]').forEach(row=>{const yes=String(row.dataset.roomRow||'').toLowerCase().includes(value);row.hidden=!yes;if(yes)count++;});let status=document.getElementById('roomFilterStatus');if(status)status.textContent=count+' matching entries';}
 function kindUI(t){return {order:['🍽','Food order'],request:['🛎','Room amenity'],booking:['🌴','Activity'],message:['💬','Guest message'],charge:['💳','Room charge']}[t]||['✦','Activity'];}
 function receptionDetails(e){if(e.type==='order')return deliveryLabel(e.area,e.room)+' · '+(e.detail||'')+(e.note?' · '+e.note:'');return e.label||'';}
-function receptionEventHTML(e,compact=false){let [ico,title]=kindUI(e.type);return `<div class="reception-event ${compact?'compact':''}"><span class="event-icon">${ico}</span><div class="event-body"><div class="event-title">${esc(title)} · <strong>Room ${esc(e.room)}</strong></div><div class="event-summary">${esc(e.label||'')}${e.type==='order'?`<br><b>Delivery: ${esc(deliveryLabel(e.area,e.room))}</b>${e.detail?' · '+esc(e.detail):''}${e.note?'<br>Note: '+esc(e.note):''}`:''}</div><small>${dateFmt(e.created)}</small></div><button class="btn small" data-action="openRoom" data-room="${esc(e.room)}">Room history ↗</button></div>`;}
-function renderLiveBoard(events){let list=events||[];return `<div class="panel reception-board section-gap" id="liveBoard"><div class="panel-heading"><div><div class="eyebrow">● LIVE FRONT DESK</div><h2>Guest activity · all departments</h2><p class="subtitle">Live orders, messages, amenities and activity bookings appear here automatically.</p></div><div class="actions"><span id="liveUnreadCount" class="chip">${state.unreadEvents||0} unread</span><button class="btn small" data-action="markEventsRead">Mark read</button><button class="btn small" data-action="showEvents">View all</button></div></div><div id="liveBoardItems">${list.length?list.slice(0,10).map(e=>receptionEventHTML(e,true)).join(''):empty('Waiting for guest activity','New requests and orders will appear here automatically.')}</div></div>`;}
+const EVENT_PERM={order:'orders',request:'requests',booking:'activities',message:'chat'};
+function eventHealthStatus(){
+ const problem=state.lastAlertFailure>0 && (Date.now()-state.lastAlertSuccess>25000);
+ return `<span id="receptionConnection" class="connection-indicator ${problem?'connection-error':'connection-ok'}" role="status">${problem?'⚠ Connection interrupted':'● Connected · checking every 4s'}</span>`;
+}
+function receptionEventHTML(e,compact=false){
+ let [ico,title]=kindUI(e.type);
+ const canHandle=canEdit(EVENT_PERM[e.type]||'');
+ const claimed=e.assigned_to?'Assigned to '+esc(e.assignee_name||'team member'):'';
+ const status=e.acknowledged_at?'✓ Accepted by '+esc(e.acknowledged_name||'staff'):(e.overdue?'⚠ Overdue · '+e.age_minutes+' min':e.action_needed?'Awaiting confirmation':'Completed');
+ return `<article class="reception-event ${compact?'compact':''} ${e.overdue?'event-overdue':''} ${e.acknowledged_at?'event-accepted':''}">
+ <span class="event-icon" aria-hidden="true">${ico}</span>
+ <div class="event-body"><div class="event-title">${esc(title)} · <strong>Room ${esc(e.room)}</strong></div>
+ <div class="event-summary">${esc(e.label||'')}${e.type==='order'?`<br><b>Deliver to: ${esc(deliveryLabel(e.area,e.room))}</b>${e.detail?' · '+esc(e.detail):''}${e.note?'<br>Note: '+esc(e.note):''}`:''}</div>
+ <div class="event-meta"><span class="event-status">${status}</span>${claimed?`<span class="event-assignee">${claimed}</span>`:''}<small>${dateFmt(e.created)}</small></div></div>
+ <div class="event-actions">${canHandle&&e.action_needed&&!e.acknowledged_at?`<button class="btn small primary" data-action="acceptEvent" data-type="${esc(e.type)}" data-id="${e.id}">✓ Accept</button>`:''}
+ ${canHandle&&!e.assigned_to?`<button class="btn small" data-action="claimEvent" data-type="${esc(e.type)}" data-id="${e.id}">Assign to me</button>`:''}
+ ${canHandle&&(isOwner()||state.auth?.user?.role==='manager')?`<button class="btn small" data-action="assignEvent" data-type="${esc(e.type)}" data-id="${e.id}">Assign staff</button>`:''}
+ <button class="btn small" data-action="openRoom" data-room="${esc(e.room)}">Room history ↗</button></div></article>`;
+}
+function renderLiveBoard(events){
+ const list=events||[],pending=list.filter(e=>e.action_needed&&!e.acknowledged_at);
+ const critical=pending.filter(e=>e.overdue).length;
+ const ordered=[...list].sort((a,b)=>(Number(b.overdue)-Number(a.overdue))||(Number(b.action_needed&&!b.acknowledged_at)-Number(a.action_needed&&!a.acknowledged_at))||b.created.localeCompare(a.created));
+ return `<div class="panel reception-board section-gap" id="liveBoard"><div class="panel-heading"><div><div class="eyebrow">● STAYOS LIVE RECEPTION</div><h2>Front desk command center</h2><p class="subtitle">Live guest orders and messages. Accept each new request so nothing is missed.</p></div>
+ <div class="actions"><span id="livePendingCount" class="chip ${pending.length?'warn':''}">${pending.length} need action</span><span id="liveOverdueCount" class="chip ${critical?'warn':''}">${critical} overdue</span><button class="btn small" data-action="showEvents">View all</button></div></div>
+ <div class="reception-heartbeat">${eventHealthStatus()}</div>
+ <div id="liveBoardItems">${ordered.length?ordered.slice(0,12).map(e=>receptionEventHTML(e,true)).join(''):empty('No guest activity','New orders, messages and requests will appear here.')}</div></div>`;
+}
 async function loadReceptionPanel(){if(!state.auth?.authenticated)return;let events=await hotelApi('events');state.receptionEvents=events;const section=document.getElementById('section');if(section&&state.tab==='dashboard')section.insertAdjacentHTML('afterbegin',renderLiveBoard(events));}
-function refreshLiveBoard(){const node=document.getElementById('liveBoardItems');if(node)node.innerHTML=(state.receptionEvents||[]).slice(0,10).map(e=>receptionEventHTML(e,true)).join('')||empty('Waiting for guest activity');const badge=document.getElementById('liveUnreadCount');if(badge)badge.textContent=(state.unreadEvents||0)+' unread';}
+function refreshLiveBoard(){
+ const node=document.getElementById('liveBoardItems');if(!node)return;
+ const events=state.receptionEvents||[];
+ const pending=events.filter(e=>e.action_needed&&!e.acknowledged_at),critical=pending.filter(e=>e.overdue);
+ const sorted=[...events].sort((a,b)=>(Number(b.overdue)-Number(a.overdue))||(Number(b.action_needed&&!b.acknowledged_at)-Number(a.action_needed&&!a.acknowledged_at))||b.created.localeCompare(a.created));
+ node.innerHTML=sorted.slice(0,12).map(e=>receptionEventHTML(e,true)).join('')||empty('No guest activity');
+ const a=document.getElementById('livePendingCount');if(a)a.textContent=pending.length+' need action';
+ const b=document.getElementById('liveOverdueCount');if(b)b.textContent=critical.length+' overdue';
+ const c=document.getElementById('receptionConnection');if(c)c.outerHTML=eventHealthStatus();
+}
 function recordEventRead(){const marks={};for(let e of state.receptionEvents||[])marks[e.type]=Math.max(marks[e.type]||0,e.id);state.receptionSeen=marks;state.unreadEvents=0;try{localStorage.setItem('stayos_seen_'+state.slug+'_'+state.auth?.user?.id,JSON.stringify(marks));}catch{}refreshLiveBoard();}
 function receptionPopup(e){const box=document.createElement('button');box.type='button';box.className='reception-popup';box.dataset.action='openRoom';box.dataset.room=e.room;box.innerHTML=`<strong>🔔 New ${esc(kindUI(e.type)[1])} · Room ${esc(e.room)}</strong><span>${esc(e.label||'')}</span>${e.type==='order'?`<span>📍 ${esc(deliveryLabel(e.area,e.room))}${e.detail?' · '+esc(e.detail):''}</span>`:''}<small>Open room history →</small>`;TOAST.prepend(box);setTimeout(()=>box.remove(),14000);}
 function renderRoomHistory(data){const room=data.room||'';let events=data.entries||[];let options=(data.rooms||[]).map(r=>`<option value="${esc(r)}"></option>`).join('');let blocks=events.map(e=>{let [ico,title]=kindUI(e.type);let summary='';if(e.type==='order')summary=`<strong>${(e.items||[]).map(x=>esc(x.qty+'× '+x.name)).join(' · ')}</strong><div>📍 ${esc(deliveryLabel(e.area,room))}${e.detail?' · '+esc(e.detail):''}</div>${e.note?'<div>📝 '+esc(e.note)+'</div>':''}<div>${fmt(e.total_cents,state.hotel.currency)}</div>`;
@@ -187,7 +231,7 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
      try{const AC=window.AudioContext||window.webkitAudioContext;if(AC){state.audioContext=new AC();await state.audioContext.resume();}}catch{}
      try{if('Notification' in window&&Notification.permission==='default')await Notification.requestPermission();}catch{}
    }
-   renderManager();notify(state.alertsEnabled?'Sound notifications enabled for this open page':'Sound alerts disabled');return;}
+   renderManager();notify(state.alertsEnabled?'Sound alerts enabled while this page is open':'Sound alerts disabled');return;}
  if(act==='closeZeroStay'){if(!confirm('Close this guest stay? No payment will be recorded.'))return;await hotelApi('checkout/close','POST',{stay_id:Number(el.dataset.id)});closeModal();notify('Guest stay closed with zero balance');await loadSection();return;}
  if(act==='reviewCheckout'){await reviewCheckout(Number(el.dataset.id));return;}
  if(act==='printCheckout'){window.print();return;}
@@ -197,16 +241,37 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
    return;
  }
  if(act==='showEvents'){
-   recordEventRead();
+   // Opening the inbox does not acknowledge operational requests.
    const el=document.getElementById('receptionLive');
    if(el)el.textContent='🔔 Reception feed';
    const events=state.receptionEvents||[];
-   modal(`<div class="heading"><h2>Reception — recent guest activity</h2><button data-action="closeModal" class="btn ghost">✕</button></div><p class="subtitle">Refreshes automatically while the manager page is open. Allow sound alerts with the button in the header.</p>${events.length?events.map(ev=>`<div class="itemrow"><div><strong>${esc(ev.kind)} · Room ${esc(ev.room)}</strong><div class="mini muted">${esc(ev.label)} · ${dateFmt(ev.created)}</div></div><button class="btn small" data-action="openEvent" data-tab="${ev.type==='order'?'orders':ev.type==='booking'?'bookings':ev.type==='message'?'chat':'requests'}">Open</button></div>`).join(''):empty('No guest activity yet')}`);
+   modal(`<div class="heading"><h2>Reception — recent guest activity</h2><button data-action="closeModal" class="btn ghost">✕</button></div><p class="subtitle">Refreshes automatically while the manager page is open. Allow sound alerts with the button in the header.</p>${events.length?events.map(ev=>receptionEventHTML(ev,true)).join(''):empty('No guest activity yet')}`);
    return;
  }
  if(act==='openRoom'){state.roomQuery=el.dataset.room||'';closeModal();navTo('room_history');return;}
  if(act==='searchRoom'){state.roomQuery=document.getElementById('roomHistoryInput')?.value.trim()||'';await loadSection();return;}
- if(act==='markEventsRead'){recordEventRead();notify('Reception alerts acknowledged');return;}
+ if(act==='assignEvent'){
+   if(!(isOwner()||state.auth?.user?.role==='manager'))throw Error('Hotel manager required');
+   const staff=await hotelApi('staff');
+   const targetPermission=EVENT_PERM[el.dataset.type];
+   const eligible=staff.filter(x=>x.active&&(x.role==='manager'||x.permissions.some(p=>p==='edit:'+targetPermission||p===targetPermission)));
+   if(!eligible.length){notify('No staff with permission for this category. Add a team member first.',true);return;}
+   const current=(state.receptionEvents||[]).find(x=>x.id===Number(el.dataset.id)&&x.type===el.dataset.type);
+   modal(`<div class="heading"><div><div class="eyebrow">FRONT DESK · ASSIGNMENT</div><h2>Assign Room ${esc(current?.room||'')}</h2></div><button class="btn ghost" data-action="closeModal">✕</button></div>
+   <p class="subtitle">Choose a staff member who has permission to handle this category.</p>
+   <form id="assignEventForm" data-type="${esc(el.dataset.type)}" data-id="${Number(el.dataset.id)}"><div class="inputgroup"><label>Assign to</label><select name="assignee_id">${eligible.map(st=>`<option value="${st.id}" ${current?.assigned_to===st.id?'selected':''}>${esc(st.display_name)} · ${esc(st.role)}</option>`).join('')}</select></div>
+   <div class="formfoot"><button class="btn" type="button" data-action="closeModal">Cancel</button><button class="btn primary" type="submit">Assign employee</button></div></form>`);
+   return;
+ }
+ if(act==='acceptEvent'||act==='claimEvent'){
+   if(!canEdit(EVENT_PERM[el.dataset.type]))throw Error('You need editing permission to handle this item');
+   el.disabled=true;
+   try{await hotelApi('events/action','POST',{type:el.dataset.type,id:Number(el.dataset.id),action:act==='acceptEvent'?'acknowledge':'claim'});
+     state.receptionEvents=await hotelApi('events');refreshLiveBoard();notify(act==='acceptEvent'?'Received and recorded for the team':'Assigned to your account');
+   }catch(err){el.disabled=false;throw err;}
+   return;
+ }
+ if(act==='markEventsRead'){recordEventRead();notify('Reception alerts marked as seen on this device');return;}
  if(act==='chooseImage'){let target=el.dataset.target,value=el.dataset.value;const selector=document.querySelector('select[name="'+target+'"]');if(selector){selector.value=value;selector.dispatchEvent(new Event('change',{bubbles:true}));}document.querySelectorAll('.photo-choice[data-target="'+target+'"]').forEach(b=>{b.classList.toggle('selected',b.dataset.value===value);let badge=b.querySelector('span');if(badge)badge.textContent=b.dataset.value===value?'✓ Current':'Select';});return;}
  if(act==='openEvent'){closeModal();navTo(el.dataset.tab);return;}
  if(act==='newHotel'){modal(`<div class="heading"><div><div class="eyebrow">PLATFORM OWNER</div><h2>Create a hotel</h2></div><button class="btn ghost" data-action="closeModal">✕</button></div><form id="newHotelForm"><div class="formgrid"><div class="inputgroup"><label>Hotel name</label><input name="name" required placeholder="Palm Bay Retreat"></div><div class="inputgroup"><label>URL slug</label><input name="slug" required pattern="[a-z][a-z0-9-]{2,39}" placeholder="palm-bay"></div><div class="inputgroup"><label>Location</label><input name="location" placeholder="Thailand"></div><div class="inputgroup"><label>Currency</label><select name="currency"><option>USD</option><option>ILS</option><option>LKR</option><option>THB</option><option>EUR</option></select></div><div class="inputgroup"><label>Language</label><select name="language"><option value="en">English</option><option value="he">עברית</option></select></div></div><div class="notice info">After creation open its workspace, create a manager under Team & Access, and upload this hotel's own photographs.</div><div class="formfoot"><button class="btn primary" type="submit">Create hotel →</button></div></form>`);return;}
@@ -243,6 +308,10 @@ document.addEventListener('change',async e=>{const el=e.target;try{
  }catch(err){renderError(err);}});
 
 document.addEventListener('submit',async e=>{let form=e.target;if(!form.id)return;e.preventDefault();let data=Object.fromEntries(new FormData(form).entries());let submit=form.querySelector('button[type=submit]');if(submit)submit.disabled=true;try{
+ if(form.id==='assignEventForm'){
+   await hotelApi('events/action','POST',{type:form.dataset.type,id:Number(form.dataset.id),action:'assign',assignee_id:Number(data.assignee_id)});
+   closeModal();state.receptionEvents=await hotelApi('events');refreshLiveBoard();notify('Assignment saved in reception log');return;
+ }
  if(form.id==='changePasswordForm'){await api('/api/auth/change-password','POST',data);notify('Password changed. Please sign in again.');location.href='/login';return;}
  if(form.id==='loginForm'){await api('/api/auth/login','POST',data);state.auth=await api('/api/auth/me');if(state.auth.user.role==='owner'){await loadHotels();history.replaceState({},'','/owner');renderOwner();}else{const result=await api('/api/auth/myhotel');state.slug=result.slug;localStorage.setItem('stayos_hotel_slug',state.slug);await loadHotelManagement();state.tab='dashboard';history.replaceState({},'','/manager');renderManager();}notify('Welcome back');return;}
  if(form.id==='newHotelForm'){let result=await api('/api/owner/hotels','POST',data);closeModal();await loadHotels();renderOwner();notify('Hotel created: '+result.slug);return;}
@@ -278,13 +347,13 @@ async function checkAlerts(){
    if(state.guestTab==='chat')await loadGuestChat();return;
   }
   if(!state.auth?.authenticated||!state.slug)return;
-  const events=await hotelApi('events');state.receptionEvents=events;
+  const events=await hotelApi('events');state.receptionEvents=events;state.lastAlertSuccess=Date.now();state.lastAlertFailure=0;
   const newest={};for(const event of events)newest[event.type]=Math.max(newest[event.type]||0,event.id);
   const seenKey='stayos_seen_'+state.slug+'_'+state.auth.user.id;
   if(state.receptionSeen===null){let saved;try{saved=JSON.parse(localStorage.getItem(seenKey)||'null');}catch{}state.receptionSeen=saved&&typeof saved==='object'?saved:newest;
     if(!saved)try{localStorage.setItem(seenKey,JSON.stringify(newest));}catch{}
   }
-  state.unreadEvents=events.filter(event=>event.id>(state.receptionSeen[event.type]||0)).length;
+  state.unreadEvents=events.filter(event=>event.action_needed&&!event.acknowledged_at).length;
   if(state.lastEventIds!==null){
     const arrivals=events.filter(e=>e.id>(state.lastEventIds[e.type]||0));
     if(arrivals.length){for(const event of arrivals.slice(0,3).reverse())receptionPopup(event);
@@ -292,10 +361,14 @@ async function checkAlerts(){
     }
   }
   state.lastEventIds=newest;
-  const button=document.getElementById('receptionLive');if(button)button.textContent='🔔 Reception feed'+(state.unreadEvents?' ('+state.unreadEvents+' new)':'');
+  const button=document.getElementById('receptionLive');if(button)button.textContent='🔔 Reception feed'+(state.unreadEvents?' ('+state.unreadEvents+' pending)':'');
   refreshLiveBoard();
   if(['requests','orders','chat','bookings'].includes(state.tab)&&!state.modal){await loadSection();applyRoomFilter();}
- }catch(err){/* Retry on next poll; do not disturb active order forms. */}
+ }catch(err){
+   state.lastAlertFailure++;
+   if(state.lastAlertFailure===4){notify('Reception connection interrupted. Check internet and Railway.',true);}
+   const status=document.getElementById('receptionConnection');if(status)status.outerHTML=eventHealthStatus();
+ }
  finally{state.alertPollBusy=false;}
 }
 window.setInterval(checkAlerts,4000);

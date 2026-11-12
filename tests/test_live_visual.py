@@ -25,7 +25,7 @@ def run():
    page.add_script_tag(content=JS)
    page.locator('input[name="username"]').fill('owner');page.locator('input[name="password"]').fill('SecureOwnerPass!12345');page.locator('#loginForm button[type="submit"]').click()
    page.get_by_text('Your Hotels').wait_for();page.get_by_role('button',name='Manage hotel').first.click()
-   page.get_by_text('Guest activity · all departments').wait_for()
+   page.get_by_text('Front desk command center').wait_for()
    page.evaluate('checkAlerts()')
    api=base+'/api/h/bayview-demo/'
    ret=http.post(api+'manage/demo-pass',json={}).json();token=ret['url'].split('token=')[-1]
@@ -36,6 +36,14 @@ def run():
    expect(page.locator('.reception-popup')).to_have_count(2)
    assert page.locator('.reception-popup').first.inner_text().find('Room 101')>=0
    expect(page.locator('#liveBoardItems')).to_contain_text('Sunbed 22')
+   # Reception action persists in the server, including named staff ownership.
+   order_event=next(x for x in http.get(api+'manage/events').json() if x['type']=='order')
+   page.locator('[data-action="acceptEvent"][data-type="order"]').first.click()
+   expect(page.locator('#liveBoardItems')).to_contain_text('Accepted by STAYOS Owner')
+   persisted=http.get(api+'manage/events').json()
+   assert next(x for x in persisted if x['type']=='order')['acknowledged_at']
+   assert next(x for x in persisted if x['type']=='order')['assigned_to']
+   print('PASS reception acknowledges food order and durable staff receipt is shown')
    page.locator('.reception-popup').first.click()
    page.get_by_text('Complete history by room').wait_for()
    assert page.locator('#roomHistoryInput').input_value()=='101'

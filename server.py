@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""STAYOS v4 real-hotel pilot: separate hotel accounts, live orders and checkout ledger.
+"""STAYOS v4.1 real-hotel pilot: reliable reception workflows, backups and checkout ledger.
 
 No online payment processing. Hotel staff records external collection at checkout.
 """
@@ -99,6 +99,17 @@ def init_db():
         CREATE TABLE IF NOT EXISTS folio(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),source TEXT NOT NULL,reference_id INTEGER NOT NULL,description TEXT NOT NULL,amount_cents INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'open',created TEXT NOT NULL,paid_at TEXT,UNIQUE(hotel_id,source,reference_id));
         CREATE TABLE IF NOT EXISTS settlements(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),amount_cents INTEGER NOT NULL,method TEXT NOT NULL,reference TEXT NOT NULL DEFAULT '',collected_by INTEGER NOT NULL REFERENCES users(id),collected_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_settlements_hotel_stay ON settlements(hotel_id,stay_id,id);
+        CREATE TABLE IF NOT EXISTS reception_actions(
+          hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+          event_type TEXT NOT NULL CHECK(event_type IN ('order','request','booking','message')),
+          event_id INTEGER NOT NULL,
+          assigned_to INTEGER REFERENCES users(id),
+          assigned_at TEXT,
+          acknowledged_by INTEGER REFERENCES users(id),
+          acknowledged_at TEXT,
+          PRIMARY KEY(hotel_id,event_type,event_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reception_actions_hotel_assignee ON reception_actions(hotel_id,assigned_to);
         CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),sender TEXT NOT NULL,body TEXT NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,hotel_id INTEGER REFERENCES hotels(id),user_id INTEGER REFERENCES users(id),action TEXT NOT NULL,entity TEXT NOT NULL,entity_id TEXT NOT NULL,details TEXT NOT NULL,created TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_stays_hotel ON stays(hotel_id,room_id);
@@ -147,7 +158,7 @@ class Bad(Exception):
     def __init__(self,msg,status=400):self.msg=str(msg);self.status=status
 
 class Handler(BaseHTTPRequestHandler):
-    server_version='STAYOS/4.0'
+    server_version='STAYOS/4.1'
     def log_message(self,fmt,*args): print('HTTP',self.address_string(),fmt%args,flush=True)
     def send_bytes(self,data,content_type='application/octet-stream',status=200,extra=None):
         active_conn=CURRENT_CONN.get()
@@ -226,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
         mime=mimetypes.guess_type(str(fn))[0] or 'application/octet-stream'
         self.send_bytes(fn.read_bytes(),mime)
     def get(self,path,q):
-        if path=='/health':return self.ok({'ok':True,'version':'4.0.0','payment_processing':False})
+        if path=='/health':return self.ok({'ok':True,'version':'4.1.0','payment_processing':False})
         if path.startswith('/media/'):
             m=re.fullmatch(r'/media/(\d+)/([0-9a-f]{24}\.webp)',path)
             if not m:raise Bad('Not found',404)
@@ -245,6 +256,17 @@ class Handler(BaseHTTPRequestHandler):
                 u=self.user(c)
                 if not u:return self.ok({'authenticated':False})
                 return self.ok({'authenticated':True,'user':{'id':u['id'],'username':u['username'],'display_name':u['display_name'],'role':u['role'],'hotel_id':u['hotel_id'],'permissions':ALL_PERMS if u['role'] in ('owner','manager') else json.loads(u['permissions'])}})
+        if path=='/api/owner/backup-status':
+            with conn() as c:
+                u=self.require(c)
+                if u['role']!='owner':raise Bad('Owner only',403)
+                status_file=DATA/'backups'/'status.json'
+                try:
+                    status=json.loads(status_file.read_text()) if status_file.is_file() else {'status':'not_run'}
+                except (ValueError,OSError):status={'status':'unavailable'}
+                return self.ok({'offsite_configured':bool(os.environ.get('STAYOS_BACKUP_S3_BUCKET')),
+                                'auto_backup_enabled':os.environ.get('STAYOS_AUTO_BACKUP','1' if IS_CLOUD else '0')=='1',
+                                'last':status})
         if path=='/api/owner/hotels':
             with conn() as c:
                 self.require(c,manager_only=True)
@@ -336,7 +358,24 @@ class Handler(BaseHTTPRequestHandler):
                             event['label']=', '.join(str(x['qty'])+'× '+x['name'] for x in event['items'])
                         elif event['type']=='request':event['label']=str(event['qty'])+'× '+event['label']
                         elif event['type']=='booking':event['label']=str(event['qty'])+'× '+event['label']
-                    return self.ok(sorted(feeds,key=lambda e:(e['created'],e['id']),reverse=True)[:80])
+                    attention_age=int(os.environ.get('STAYOS_ALERT_ESCALATE_MINUTES','3'))
+                    now=datetime.now(timezone.utc)
+                    for event in feeds:
+                        ack=c.execute('''SELECT x.acknowledged_at,x.acknowledged_by,x.assigned_to,
+                                             au.display_name AS assignee_name,cu.display_name AS acknowledged_name
+                                        FROM reception_actions x
+                                        LEFT JOIN users au ON au.id=x.assigned_to
+                                        LEFT JOIN users cu ON cu.id=x.acknowledged_by
+                                        WHERE x.hotel_id=? AND x.event_type=? AND x.event_id=?''',
+                                      (hid,event['type'],event['id'])).fetchone()
+                        if ack:event.update(dict(ack))
+                        else:event.update(acknowledged_at=None,acknowledged_by=None,assigned_to=None,assignee_name=None,acknowledged_name=None)
+                        age=max(0,int((now-parse_dt(event['created'])).total_seconds()/60))
+                        event['age_minutes']=age
+                        # Completed/cancelled orders and requests no longer require new acknowledgements.
+                        event['action_needed']=not event['acknowledged_at'] and (event['type'] not in ('order','request') or event['status'] not in ('done','delivered','cancelled'))
+                        event['overdue']=bool(event['action_needed'] and age>=attention_age)
+                    return self.ok(sorted(feeds,key=lambda e:(e['created'],e['id']),reverse=True)[:200])
                 if part=='room-history':
                     u=self.require(c,None,hid)
                     perms=set(json.loads(u['permissions'])) if u['role']=='staff' else set(ALL_PERMS)
@@ -706,6 +745,46 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1<=len(msg)<=1500 or not c.execute('SELECT 1 FROM stays WHERE hotel_id=? AND id=?',(hid,sid)).fetchone():raise Bad('Invalid chat target or message')
                 c.execute('INSERT INTO messages(hotel_id,stay_id,sender,body,created) VALUES(?,?,?,?,?)',(hid,sid,'reception',msg,utcnow()))
                 return self.ok({'ok':True},201)
+            if part=='events/action':
+                kind=str(b.get('type',''))
+                lookup={'order':('orders','food_orders',False),
+                        'request':('requests','requests',False),
+                        'booking':('activities','bookings',False),
+                        'message':('chat','messages',True)}
+                if kind not in lookup:raise Bad('Invalid event type',400)
+                permission,table,guest_only=lookup[kind]
+                u=self.require(c,permission,hid,write=True)
+                event_id=int(b.get('id',0));action=str(b.get('action',''))
+                if event_id<=0 or action not in ('acknowledge','claim','assign','release'):raise Bad('Invalid event action',400)
+                extra=' AND sender="guest"' if guest_only else ''
+                source=c.execute('SELECT id FROM '+table+' WHERE hotel_id=? AND id=?'+extra,(hid,event_id)).fetchone()
+                if not source:raise Bad('Event not found',404)
+                now=utcnow()
+                c.execute('''INSERT OR IGNORE INTO reception_actions(hotel_id,event_type,event_id)
+                            VALUES(?,?,?)''',(hid,kind,event_id))
+                if action in ('claim','assign'):
+                    target=u['id'] if action=='claim' else int(b.get('assignee_id',0))
+                    if action=='assign' and u['role'] not in ('owner','manager'):raise Bad('Manager permission required to assign another worker',403)
+                    assignee=c.execute('SELECT * FROM users WHERE id=? AND active=1 AND (hotel_id=? OR role="owner")',(target,hid)).fetchone()
+                    if not assignee:raise Bad('Assignee not in this hotel',400)
+                    if assignee['role']=='staff':
+                        permissions=json.loads(assignee['permissions'])
+                        if not (permission in permissions or 'edit:'+permission in permissions):raise Bad('Assignee cannot work on this category',400)
+                    c.execute('UPDATE reception_actions SET assigned_to=?,assigned_at=? WHERE hotel_id=? AND event_type=? AND event_id=?',
+                              (target,now,hid,kind,event_id))
+                elif action=='release':
+                    existing=c.execute('SELECT assigned_to FROM reception_actions WHERE hotel_id=? AND event_type=? AND event_id=?',(hid,kind,event_id)).fetchone()
+                    if u['role'] not in ('owner','manager') and existing['assigned_to']!=u['id']:raise Bad('Cannot release another worker assignment',403)
+                    c.execute('UPDATE reception_actions SET assigned_to=NULL,assigned_at=NULL WHERE hotel_id=? AND event_type=? AND event_id=?',(hid,kind,event_id))
+                elif action=='acknowledge':
+                    # Write once; repeated clicks do not overwrite the employee who accepted it.
+                    c.execute('''UPDATE reception_actions SET acknowledged_by=?,acknowledged_at=?,
+                                 assigned_to=COALESCE(assigned_to,?),assigned_at=COALESCE(assigned_at,?)
+                                 WHERE hotel_id=? AND event_type=? AND event_id=? AND acknowledged_at IS NULL''',
+                              (u['id'],now,u['id'],now,hid,kind,event_id))
+                audit(c,hid,u['id'],action,'reception_'+kind,event_id)
+                row=c.execute('SELECT * FROM reception_actions WHERE hotel_id=? AND event_type=? AND event_id=?',(hid,kind,event_id)).fetchone()
+                return self.ok(dict(row))
             if part=='requests/status':
                 u=self.require(c,'requests',hid,write=True);status=str(b.get('status',''))
                 if status not in ('new','progress','done','cancelled'):raise Bad('Invalid status')
@@ -863,5 +942,8 @@ class Handler(BaseHTTPRequestHandler):
 FAILURES={};FAILED_LOCK=threading.Lock()
 if __name__=='__main__':
     init_db()
-    print('STAYOS v3 listening on',PORT,'database',DB,flush=True)
+    if os.environ.get('STAYOS_AUTO_BACKUP','1' if IS_CLOUD else '0')=='1':
+        from backup import backup_worker
+        threading.Thread(target=backup_worker,args=(DB,MEDIA,DATA/'backups'),daemon=True,name='stayos-backups').start()
+    print('STAYOS v4.1 listening on',PORT,'database',DB,flush=True)
     ThreadingHTTPServer(('0.0.0.0',PORT),Handler).serve_forever()

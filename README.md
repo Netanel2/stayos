@@ -1,4 +1,4 @@
-# STAYOS v4.0 — Real hotel pilot / operational guest platform
+# STAYOS v4.1 — Real hotel pilot / operational guest platform
 
 STAYOS manages individual hotel accounts with a staff administration dashboard and guest QR application. **It does not process online payments.** It records chargeable services, meals and paid activities against a guest stay; reception collects the money with the hotel's own terminal at checkout, then records the collection in STAYOS.
 
@@ -38,3 +38,20 @@ The suite uses disposable test hotels. Some tests explicitly enable concept data
 ## Not yet suitable for unrestricted real guest rollout
 
 A technical pilot is not an independent security certification. Before storing real guest data, complete a security/privacy review, staff onboarding, automated off-site backups and restore testing, monitoring, load testing, accessibility review, incident response and operational acceptance testing on physical phones. Browser notifications require the receptionist page open; offline push is not supported. The system is not a hotel PMS, payment processor, fiscal invoice provider or replacement for hotel accounting.
+
+## v4.1 — Front desk reliability
+
+The live receptionist inbox (while the dashboard remains open) now has server-persisted acknowledgements, staff self-assignment, age-based escalation badges, permission enforcement, and a clear connection status. Acknowledgements survive refresh and are recorded in the audit trail. No external notifications are sent with the browser closed.
+
+Run `python backup.py --now` to create a consistent SQLite + photo snapshot and verify it. On Railway, snapshots run automatically about once per 24 hours while the web process runs. Local copies under `/data/backups` **do not protect against loss of the Railway Volume**. For independent protection configure `STAYOS_BACKUP_S3_BUCKET` and S3 credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`; optionally `STAYOS_BACKUP_S3_ENDPOINT`) in Railway Variables, then test restoring to an isolated directory. Never send backups to GitHub.
+
+See `UPGRADE_v4.1_HE.md` for safe deployment and backup instructions.
+
+### v4.1 automated regression
+
+```
+python tests/test_v41_reception.py
+python tests/test_live_visual.py
+```
+
+Acceptance is distinct from fulfillment: front desk employees must still update actual delivery/housekeeping statuses. The live browser view cannot guarantee alerts when the browser is closed. Automated offsite backups need a configured private S3-compatible bucket and tested restore.

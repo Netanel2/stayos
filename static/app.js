@@ -15,7 +15,7 @@ function getLocalDate(n=0){let d=new Date(Date.now()+n*86400000);return `${d.get
 function toLocal(d){if(!d)return '';let a=new Date(d);return `${a.getFullYear()}-${String(a.getMonth()+1).padStart(2,'0')}-${String(a.getDate()).padStart(2,'0')}T${String(a.getHours()).padStart(2,'0')}:${String(a.getMinutes()).padStart(2,'0')}`;}
 function notify(s,error=false){let d=document.createElement('div');d.className='toast'+(error?' error':'');d.textContent=s;TOAST.append(d);setTimeout(()=>d.remove(),4200);}
 async function api(url,method='GET',body,raw=false){const opts={method,credentials:'same-origin',headers:{}};if(body!==undefined){if(raw){opts.body=body;opts.headers['Content-Type']=body.type||'application/octet-stream';}else{opts.body=JSON.stringify(body);opts.headers['Content-Type']='application/json';}}let resp;try{resp=await fetch(url,opts);}catch{throw new Error('Network error — check the server connection.');}let data;if(resp.headers.get('Content-Type')?.includes('application/json'))data=await resp.json();else data=await resp.text();if(!resp.ok)throw Error(data.error||`Request failed: ${resp.status}`);return data;}
-function modal(html){state.modal=html;renderModal();}function closeModal(){state.modal=null;renderModal();}function renderModal(){let m=document.getElementById('modalroot');if(!m){m=document.createElement('div');m.id='modalroot';document.body.append(m);}m.innerHTML=state.modal?`<div class="modalwrap" data-close="1"><div class="modal" role="dialog" aria-modal="true">${state.modal}</div></div>`:'';}
+function modal(html){state.modal=html;document.querySelectorAll(".reception-popup").forEach(x=>x.remove());renderModal();}function closeModal(){state.modal=null;renderModal();}function renderModal(){let m=document.getElementById('modalroot');if(!m){m=document.createElement('div');m.id='modalroot';document.body.append(m);}m.innerHTML=state.modal?`<div class="modalwrap" data-close="1"><div class="modal" role="dialog" aria-modal="true">${state.modal}</div></div>`:'';}
 function hroute(s,part){return `/api/h/${encodeURIComponent(s)}/${part}`;}
 function hotelApi(part,method='GET',body,raw=false){return api(hroute(state.slug,'manage/'+part),method,body,raw);}
 function available(p){const u=state.auth?.user;return !!(u&&(['owner','manager'].includes(u.role)||u.permissions?.some(x=>[p,'view:'+p,'edit:'+p].includes(x))));}
@@ -356,7 +356,7 @@ async function checkAlerts(){
   state.unreadEvents=events.filter(event=>event.action_needed&&!event.acknowledged_at).length;
   if(state.lastEventIds!==null){
     const arrivals=events.filter(e=>e.id>(state.lastEventIds[e.type]||0));
-    if(arrivals.length){for(const event of arrivals.slice(0,3).reverse())receptionPopup(event);
+    if(arrivals.length){if(!state.modal)for(const event of arrivals.slice(0,3).reverse())receptionPopup(event);
       if(state.alertsEnabled){playAlert();try{if('Notification' in window&&Notification.permission==='granted'){let e=arrivals[0];new Notification('STAYOS · '+kindUI(e.type)[1],{body:'Room '+e.room+' · '+e.label,tag:'stayos-'+state.slug+'-'+e.type+'-'+e.id});}}catch{}}
     }
   }

@@ -66,3 +66,6 @@ tr[data-room-row][hidden]{display:none!important}
 #liveBoardItems{min-width:0}
 @media(max-width:700px){.reception-event .event-actions{width:100%;margin-left:0;flex-direction:row;flex-wrap:wrap}.reception-event .event-actions .btn{flex:1;min-width:120px}.reception-board .panel-heading{gap:15px}}
 .backup-health{border-left:4px solid #be8a3e;background:#fffdf7}.backup-health.backup-ok{border-color:#2f8062;background:#f5faf4}.backup-health h3{font-size:1.5rem;margin:7px 0 10px}.backup-health p+p{margin-top:8px}
+
+/* Working dialogs must always be above transient front-desk notifications. */
+.modalwrap{z-index:130}#toast{z-index:90}

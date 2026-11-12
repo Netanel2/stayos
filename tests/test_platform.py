@@ -10,7 +10,7 @@ HERE=Path(__file__).resolve().parents[1]
 def start():
     tmp=tempfile.TemporaryDirectory(prefix='stayostest_')
     sock=socket.socket();sock.bind(('127.0.0.1',0));port=sock.getsockname()[1];sock.close()
-    env=os.environ.copy();env.update(STAYOS_DATA_DIR=tmp.name,STAYOS_ADMIN_PASSWORD='SecureOwnerPass!12345',PORT=str(port))
+    env=os.environ.copy();env.update(STAYOS_DATA_DIR=tmp.name,STAYOS_ADMIN_PASSWORD='SecureOwnerPass!12345',STAYOS_DEMO_SEED='1',PORT=str(port))
     proc=subprocess.Popen([sys.executable,str(HERE/'server.py')],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     base=f'http://127.0.0.1:{port}'
     for _ in range(100):
@@ -126,7 +126,8 @@ def run():
         # active order can be settled once using external hotel payment confirmation
         k={'request_key':'safe-retry-client-0002','area':'room','detail':'','note':'','items':[{'product_id':prod['id'],'qty':1}]}
         paid_order=send(unauth,'POST',gprefix+'/order',201,json=k)
-        settled=send(manager,'POST',base+'/api/h/bayview-demo/manage/folio/settle',json={'stay_id':guest['id'],'method':'terminal'})
+        review=send(manager,'GET',base+'/api/h/bayview-demo/manage/checkout?stay_id='+str(guest['id']))
+        settled=send(manager,'POST',base+'/api/h/bayview-demo/manage/folio/settle',json={'stay_id':guest['id'],'expected_amount_cents':review['totals']['open'],'method':'terminal','reference':'hotel-terminal-123'})
         assert settled['amount_cents']>=paid_order['total_cents']
         assert any(x['status']=='paid' and x['reference_id']==paid_order['id'] for x in send(manager,'GET',base+'/api/h/bayview-demo/manage/folio'))
         assert send(manager,'POST',base+'/api/h/bayview-demo/manage/orders/status',400,json={'id':paid_order['id'],'status':'cancelled'})['error'];check('folio external settlement cannot be casually voided')

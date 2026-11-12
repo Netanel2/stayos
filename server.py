@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""STAYOS v3 multi-hotel pilot platform. SQLite/one instance MVP; review before production."""
+"""STAYOS v4 real-hotel pilot: separate hotel accounts, live orders and checkout ledger.
+
+No online payment processing. Hotel staff records external collection at checkout.
+"""
 import os, sys, json, re, sqlite3, secrets, hashlib, hmac, time, io, mimetypes, threading, contextvars
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -15,9 +18,10 @@ DB=Path(os.environ.get('STAYOS_PLATFORM_DB', str(DATA/'platform.sqlite')))
 MEDIA=Path(os.environ.get('STAYOS_MEDIA_DIR', str(DATA/'media')))
 PORT=int(os.environ.get('PORT','8765'))
 SECURE=os.environ.get('STAYOS_COOKIE_SECURE','1' if os.environ.get('RAILWAY_ENVIRONMENT') else '0')=='1'
-DEMO_MODE=os.environ.get('STAYOS_DEMO_SEED','1')=='1'
-OWNER_PASSWORD=os.environ.get('STAYOS_ADMIN_PASSWORD','')
 IS_CLOUD=bool(os.environ.get('RAILWAY_ENVIRONMENT'))
+# Concept data is allowed for explicit local tests only, never in a deployed hotel service.
+DEMO_MODE=os.environ.get('STAYOS_DEMO_SEED','0')=='1' and not IS_CLOUD
+OWNER_PASSWORD=os.environ.get('STAYOS_ADMIN_PASSWORD','')
 if IS_CLOUD and (not OWNER_PASSWORD or OWNER_PASSWORD=='stayos-demo' or len(OWNER_PASSWORD)<12):
     raise RuntimeError('Set STAYOS_ADMIN_PASSWORD in Railway Variables to a unique strong password (12+ chars)')
 if not OWNER_PASSWORD: OWNER_PASSWORD='local-demo-only-change-me'
@@ -32,7 +36,7 @@ FIELDS={
  'services':{'name_en':'str','name_he':'str','description_en':'text','description_he':'text','category':'str','image':'image','active':'bool'},
 }
 RESOURCE_PERM={'room_types':'rooms','rooms':'rooms','menu':'menu','activities':'activities','amenities':'amenities','services':'services'}
-DEF_IMG={'room_types':'room-garden.webp','menu':'coconut.webp','activities':'yoga.webp','amenities':'resort-pool.webp','services':'wellness-spa.webp'}
+DEF_IMG={'room_types':'','menu':'','activities':'','amenities':'','services':''}
 
 CURRENT_CONN=contextvars.ContextVar("stayos_active_connection",default=None)
 
@@ -78,7 +82,7 @@ def init_db():
     with conn() as c:
         c.execute('PRAGMA journal_mode=WAL')
         c.executescript('''
-        CREATE TABLE IF NOT EXISTS hotels(id INTEGER PRIMARY KEY,slug TEXT UNIQUE NOT NULL,name TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',currency TEXT NOT NULL DEFAULT 'USD',language TEXT NOT NULL DEFAULT 'en',welcome_en TEXT NOT NULL DEFAULT '',welcome_he TEXT NOT NULL DEFAULT '',description_en TEXT NOT NULL DEFAULT '',description_he TEXT NOT NULL DEFAULT '',primary_color TEXT NOT NULL DEFAULT '#123b36',accent_color TEXT NOT NULL DEFAULT '#c3a473',hero_image TEXT NOT NULL DEFAULT 'resort-hero.webp',logo_image TEXT NOT NULL DEFAULT '',demo INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS hotels(id INTEGER PRIMARY KEY,slug TEXT UNIQUE NOT NULL,name TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',currency TEXT NOT NULL DEFAULT 'USD',language TEXT NOT NULL DEFAULT 'en',welcome_en TEXT NOT NULL DEFAULT '',welcome_he TEXT NOT NULL DEFAULT '',description_en TEXT NOT NULL DEFAULT '',description_he TEXT NOT NULL DEFAULT '',primary_color TEXT NOT NULL DEFAULT '#123b36',accent_color TEXT NOT NULL DEFAULT '#c3a473',hero_image TEXT NOT NULL DEFAULT '',logo_image TEXT NOT NULL DEFAULT '',demo INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,hotel_id INTEGER REFERENCES hotels(id),username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,display_name TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN('owner','manager','staff')),permissions TEXT NOT NULL DEFAULT '[]',active INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),expires TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS room_types(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),name_en TEXT NOT NULL DEFAULT '',name_he TEXT NOT NULL DEFAULT '',description_en TEXT NOT NULL DEFAULT '',description_he TEXT NOT NULL DEFAULT '',size TEXT NOT NULL DEFAULT '',max_guests INTEGER NOT NULL DEFAULT 2,image TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1);
@@ -93,6 +97,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS food_lines(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),order_id INTEGER NOT NULL REFERENCES food_orders(id),product_id INTEGER NOT NULL REFERENCES menu(id),name TEXT NOT NULL,qty INTEGER NOT NULL,price_cents INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),activity_id INTEGER NOT NULL REFERENCES activities(id),qty INTEGER NOT NULL,created TEXT NOT NULL,cancelled_at TEXT,UNIQUE(stay_id,activity_id));
         CREATE TABLE IF NOT EXISTS folio(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),source TEXT NOT NULL,reference_id INTEGER NOT NULL,description TEXT NOT NULL,amount_cents INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'open',created TEXT NOT NULL,paid_at TEXT,UNIQUE(hotel_id,source,reference_id));
+        CREATE TABLE IF NOT EXISTS settlements(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),amount_cents INTEGER NOT NULL,method TEXT NOT NULL,reference TEXT NOT NULL DEFAULT '',collected_by INTEGER NOT NULL REFERENCES users(id),collected_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_settlements_hotel_stay ON settlements(hotel_id,stay_id,id);
         CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,hotel_id INTEGER NOT NULL REFERENCES hotels(id),stay_id INTEGER NOT NULL REFERENCES stays(id),sender TEXT NOT NULL,body TEXT NOT NULL,created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,hotel_id INTEGER REFERENCES hotels(id),user_id INTEGER REFERENCES users(id),action TEXT NOT NULL,entity TEXT NOT NULL,entity_id TEXT NOT NULL,details TEXT NOT NULL,created TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_stays_hotel ON stays(hotel_id,room_id);
@@ -110,6 +116,9 @@ def init_db():
             print('STAYOS owner account created: username owner. Password: STAYOS_ADMIN_PASSWORD environment variable.',flush=True)
         if DEMO_MODE and not c.execute('SELECT 1 FROM hotels LIMIT 1').fetchone():
             seed_bayview(c)
+        if not DEMO_MODE:
+            # Preserve prior test data for backup/audit, but do not expose it to real guests.
+            c.execute('UPDATE hotels SET active=0 WHERE demo=1 AND active<>0')
 
 def seed_bayview(c):
     """Fictional example content. No claim of affiliation or actual hotel inventory."""
@@ -138,7 +147,7 @@ class Bad(Exception):
     def __init__(self,msg,status=400):self.msg=str(msg);self.status=status
 
 class Handler(BaseHTTPRequestHandler):
-    server_version='STAYOS/3.2'
+    server_version='STAYOS/4.0'
     def log_message(self,fmt,*args): print('HTTP',self.address_string(),fmt%args,flush=True)
     def send_bytes(self,data,content_type='application/octet-stream',status=200,extra=None):
         active_conn=CURRENT_CONN.get()
@@ -217,7 +226,7 @@ class Handler(BaseHTTPRequestHandler):
         mime=mimetypes.guess_type(str(fn))[0] or 'application/octet-stream'
         self.send_bytes(fn.read_bytes(),mime)
     def get(self,path,q):
-        if path=='/health':return self.ok({'ok':True,'version':'3.2.0'})
+        if path=='/health':return self.ok({'ok':True,'version':'4.0.0','payment_processing':False})
         if path.startswith('/media/'):
             m=re.fullmatch(r'/media/(\d+)/([0-9a-f]{24}\.webp)',path)
             if not m:raise Bad('Not found',404)
@@ -240,7 +249,7 @@ class Handler(BaseHTTPRequestHandler):
             with conn() as c:
                 self.require(c,manager_only=True)
                 if self.user(c)['role']!='owner':raise Bad('Owner only',403)
-                return self.ok([dict(h) for h in c.execute('SELECT * FROM hotels ORDER BY id')])
+                return self.ok([dict(h) for h in c.execute('SELECT * FROM hotels '+('' if DEMO_MODE else 'WHERE demo=0 ')+'ORDER BY id')])
         mh=re.fullmatch(r'/api/h/([a-z0-9-]+)/(.*)',path)
         if mh:
             slug,rest=mh.group(1),mh.group(2)
@@ -387,6 +396,35 @@ class Handler(BaseHTTPRequestHandler):
                 if part=='folio':
                     self.require(c,'folio',hid)
                     return self.ok([dict(x) for x in c.execute('SELECT f.*,r.room,fo.area AS delivery_area,fo.detail AS delivery_detail,fo.note AS delivery_note FROM folio f JOIN stays s ON s.id=f.stay_id JOIN rooms r ON r.id=s.room_id LEFT JOIN food_orders fo ON fo.hotel_id=f.hotel_id AND fo.id=f.reference_id AND f.source="food" WHERE f.hotel_id=? ORDER BY f.id DESC',(hid,))])
+                if part=='checkout':
+                    self.require(c,'folio',hid)
+                    try:sid=int(q.get('stay_id',['0'])[0])
+                    except (TypeError,ValueError):raise Bad('Invalid stay',400)
+                    stay=c.execute('''SELECT s.id,s.start,s.ends,s.revoked,s.guests,r.room
+                          FROM stays s JOIN rooms r ON r.id=s.room_id
+                          WHERE s.hotel_id=? AND s.id=?''',(hid,sid)).fetchone()
+                    if not stay:raise Bad('Stay not found',404)
+                    charges=[dict(x) for x in c.execute('''SELECT f.id,f.source,f.reference_id,f.description,f.amount_cents,f.status,f.created,f.paid_at,
+                          o.area AS delivery_area,o.detail AS delivery_detail,o.note AS delivery_note
+                          FROM folio f LEFT JOIN food_orders o ON o.id=f.reference_id AND o.hotel_id=f.hotel_id AND f.source='food'
+                          WHERE f.hotel_id=? AND f.stay_id=? ORDER BY f.id''',(hid,sid))]
+                    free_bookings=[dict(x) for x in c.execute('''SELECT b.id,b.qty,b.created,b.cancelled_at,a.name_en,a.name_he,a.starts
+                          FROM bookings b JOIN activities a ON a.id=b.activity_id
+                          WHERE b.hotel_id=? AND b.stay_id=? AND a.price_cents=0 ORDER BY b.id''',(hid,sid))]
+                    free_requests=[dict(x) for x in c.execute('''SELECT r.id,r.qty,r.status,r.created,a.name_en,a.name_he
+                          FROM requests r JOIN amenities a ON a.id=r.amenity_id
+                          WHERE r.hotel_id=? AND r.stay_id=? ORDER BY r.id''',(hid,sid))]
+                    pending_orders=[dict(x) for x in c.execute('''SELECT id,area,detail,status FROM food_orders
+                          WHERE hotel_id=? AND stay_id=? AND status IN ('new','preparing','on_way') ORDER BY id''',(hid,sid))]
+                    settled=[dict(x) for x in c.execute('''SELECT s.id,s.amount_cents,s.method,s.reference,s.collected_at,u.display_name AS collected_by
+                          FROM settlements s JOIN users u ON u.id=s.collected_by
+                          WHERE s.hotel_id=? AND s.stay_id=? ORDER BY s.id''',(hid,sid))]
+                    totals={status:sum(int(f['amount_cents']) for f in charges if f['status']==status)
+                            for status in ('open','paid','void')}
+                    return self.ok({'stay':dict(stay),'currency':h['currency'],'charges':charges,
+                                    'free_bookings':free_bookings,'requests':free_requests,
+                                    'pending_orders':pending_orders,'settlements':settled,
+                                    'totals':totals,'payment_processing':False})
                 if part=='chat':
                     self.require(c,'chat',hid)
                     stay_id=int(q.get('stay_id',[0])[0])
@@ -689,14 +727,49 @@ class Handler(BaseHTTPRequestHandler):
                 c.execute('UPDATE food_orders SET status=? WHERE hotel_id=? AND id=?',(status,hid,oid))
                 audit(c,hid,u['id'],'status','order',oid,status)
                 return self.ok({'ok':True})
+            if part=='checkout/close':
+                u=self.require(c,'folio',hid,write=True)
+                try:sid=int(b.get('stay_id',0))
+                except (TypeError,ValueError):raise Bad('Invalid stay ID')
+                c.execute('BEGIN IMMEDIATE')
+                stay=c.execute('SELECT revoked FROM stays WHERE hotel_id=? AND id=?',(hid,sid)).fetchone()
+                if not stay:raise Bad('Stay not found',404)
+                if stay['revoked']:raise Bad('Guest pass already closed',409)
+                open_amount=c.execute('SELECT COALESCE(SUM(amount_cents),0) FROM folio WHERE hotel_id=? AND stay_id=? AND status="open"',(hid,sid)).fetchone()[0]
+                if open_amount:raise Bad('There are unpaid charges. Review checkout before closing.',409)
+                c.execute('UPDATE stays SET revoked=1 WHERE hotel_id=? AND id=?',(hid,sid))
+                audit(c,hid,u['id'],'checkout_closed_without_payment','stay',sid,'zero outstanding balance')
+                return self.ok({'ok':True,'stay_closed':True,'amount_cents':0,'message':'Stay closed, no external collection recorded'})
             if part=='folio/settle':
-                u=self.require(c,'folio',hid,write=True);sid=int(b.get('stay_id',0));method=str(b.get('method',''))
-                if method not in ('cash','terminal','other'):raise Bad('Invalid payment method')
-                if not c.execute('SELECT 1 FROM stays WHERE hotel_id=? AND id=?',(hid,sid)).fetchone():raise Bad('Stay not found',404)
+                u=self.require(c,'folio',hid,write=True)
+                try:
+                    sid=int(b.get('stay_id',0))
+                    expected=int(b.get('expected_amount_cents',-1))
+                except (TypeError,ValueError):raise Bad('Invalid checkout values')
+                method=str(b.get('method',''))
+                reference=str(b.get('reference','')).strip()
+                if method not in ('cash','terminal','other'):raise Bad('Invalid collection method')
+                if len(reference)>80:raise Bad('Reference too long')
+                if expected<0:raise Bad('Review the current checkout total before confirming',400)
+                # Lock writers before calculating the amount: a new order cannot slip in
+                # between the reviewed balance and the payment confirmation.
+                c.execute('BEGIN IMMEDIATE')
+                stay=c.execute('SELECT revoked FROM stays WHERE hotel_id=? AND id=?',(hid,sid)).fetchone()
+                if not stay:raise Bad('Stay not found',404)
                 amount=c.execute('SELECT COALESCE(SUM(amount_cents),0) FROM folio WHERE hotel_id=? AND stay_id=? AND status="open"',(hid,sid)).fetchone()[0]
-                c.execute('UPDATE folio SET status="paid",paid_at=? WHERE hotel_id=? AND stay_id=? AND status="open"',(utcnow()+' / '+method,hid,sid))
-                audit(c,hid,u['id'],'settle','folio',sid,amount)
-                return self.ok({'ok':True,'amount_cents':amount})
+                if amount!=expected:raise Bad('Room balance changed. Review checkout again.',409)
+                if amount<=0:raise Bad('No outstanding charges to collect',409)
+                collected_at=utcnow()
+                c.execute('INSERT INTO settlements(hotel_id,stay_id,amount_cents,method,reference,collected_by,collected_at) VALUES(?,?,?,?,?,?,?)',
+                          (hid,sid,amount,method,reference,u['id'],collected_at))
+                settle_id=c.execute('SELECT last_insert_rowid()').fetchone()[0]
+                c.execute('UPDATE folio SET status="paid",paid_at=? WHERE hotel_id=? AND stay_id=? AND status="open"',(collected_at,hid,sid))
+                # Checkout closes guest access so no fresh QR orders can create charges
+                # after reception records collection.
+                c.execute('UPDATE stays SET revoked=1 WHERE hotel_id=? AND id=?',(hid,sid))
+                audit(c,hid,u['id'],'checkout_collected','settlement',settle_id,'amount='+str(amount)+'; method='+method)
+                return self.ok({'ok':True,'amount_cents':amount,'settlement_id':settle_id,'stay_closed':True,
+                                'message':'Payment recorded externally; STAYOS did not charge a card'})
             raise Bad('Not found',404)
     def update(self,path,b):
         mh=re.fullmatch(r'/api/h/([a-z0-9-]+)/manage/([a-z_]+)/(\d+)',path)

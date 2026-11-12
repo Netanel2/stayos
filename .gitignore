@@ -1,4 +1,4 @@
-# Sensitive configuration and guest data
+# Secrets and all private hotel/guest data
 .env
 .env.*
 !.env.example
@@ -6,12 +6,17 @@
 *.db-*
 *.sqlite
 *.sqlite3
-stay.db
-static/assets/hotel-*.webp
+*.sqlite-*
+local-data/
+data/
+media/
+uploads/
+*.log
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
 venv/
+node_modules/
 .DS_Store
 Thumbs.db

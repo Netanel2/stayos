@@ -1,77 +1,40 @@
-> **v3.2:** See [`UPGRADE_v3.2_HE.md`](UPGRADE_v3.2_HE.md) for live reception alerts, room history, photo replacement and Railway update instructions.
+# STAYOS v4.0 — Real hotel pilot / operational guest platform
 
-# STAYOS v3.2 — Multi-Hotel Pilot Platform
+STAYOS manages individual hotel accounts with a staff administration dashboard and guest QR application. **It does not process online payments.** It records chargeable services, meals and paid activities against a guest stay; reception collects the money with the hotel's own terminal at checkout, then records the collection in STAYOS.
 
-A premium hotel guest experience platform with a **platform owner console**, **separate hotel management workspaces**, **granular staff permissions**, and **mobile guest portal**.
+## No fake hotels or demo content by default
 
-> **Pilot / demonstration software.** This is not production-certified for real guest data, payment processing, or multiple server replicas. Security, regulatory/privacy, accessibility, support and operational reviews are required before an actual hotel rollout.
+- New installations start with **zero hotels, zero rooms, zero menu products and zero guest passes**. The owner creates a hotel and adds actual authorized content.
+- On an existing data volume, previously seeded `demo=1` concept hotels are automatically **deactivated and hidden**, not erased. Their historical records are preserved for recovery.
+- Set `STAYOS_DEMO_SEED=0` in Railway. Even if it is mistakenly set to 1, concept seeding is disabled in Railway/cloud environments.
+- Images are blank until uploaded by the hotel; a neutral placeholder is used instead of passing off AI photography as the hotel's own.
 
-## What changed in v3.1
+## Modules
 
-- **Working live ordering demo:** the Bayview workspace now has **Try guest demo** for logged-in authorized staff. It opens an active time-limited guest QR session. Public previews remain read-only so anonymous visitors cannot create charges.
-- **Guest cart fixed:** changing quantities does not reset the delivery destination, table/sunbed or notes; location details are required away from the room; the button clearly reflects whether the guest pass allows orders.
-- **Reception event feed:** requests, food orders, activity bookings and guest messages are recorded in a permission-scoped live feed polled every 10 seconds while the page is open. In-app notifications are automatic; optional sound / browser notifications must be enabled by the user. This is **not background Push**.
-- **Activity Bookings:** new reception view; registrations and prices reach the desk and room folio.
-- **Coverage:** `python tests/test_platform.py`, `python tests/test_notifications.py`, `python tests/test_guest_flows.py`, `python tests/test_browser.py`.
-
-## What's inside
-
-- **Owner / Super Admin:** create and suspend hotels; enter each hotel's workspace; assign its first manager.
-- **Hotel Manager:** manage room types, physical rooms, photos, menus, prices, amenities/quotas, activities, facility/services content, branding, and staff.
-- **Permissions:** a hotel manager can create staff accounts and grant No access, View only or View & edit for each module; staff do not inherit editing rights by default. Server enforces permissions and hotel isolation.
-- **Guest web app:** QR-based time-limited room access, dining orders with six delivery areas (room/pool/lobby/beach/restaurant/garden), amenities requests, activities bookings, two-way reception chat, room folio, and Hebrew/English.
-- **Reception:** QR creation/revocation, requests, delivery statuses, guest chat, and a checkout folio which is marked paid **only after payment is collected outside STAYOS**.
-- **Media:** photos uploaded to hotel-specific directories and transcoded to WebP; persistent storage on the Railway volume.
-- **PWA:** per-stay manifest points to the guest's room on relaunch; Android installation where supported; iOS Safari needs manual Add to Home Screen.
-- **Notifications:** manager-side polling and user-enabled sound while the page is open. No push notification service yet.
-
-## Included example property
-
-**Bayview Hotel — Concept Demo** (`/h/bayview-demo/preview`) is a **fictional, unofficial presentation of the hotel we contacted**, preloaded with illustrative AI resort photography, sample rooms, menu, services, activities, and a fictitious demo stay. It is **not** the hotel's official website, not associated with its management, and no actual hotel inventory, pricing, or guest records are used.
-
-## Local quick start
-
-Requires Python 3.10+.
-
-```bash
-python -m pip install -r requirements.txt
-export STAYOS_ADMIN_PASSWORD='REPLACE-WITH-UNIQUE-LONG-PASSWORD'
-python server.py
-```
-
-Open `http://localhost:8765`, sign in with username `owner` and the password defined in `STAYOS_ADMIN_PASSWORD`.
-
-- Owner dashboard: `/owner` (after sign in)
-- Bayview guest concept: `/h/bayview-demo/preview`
-- Generated QR guest links: `/h/bayview-demo/guest?token=...`
-
-Default local database: `local-data/platform.sqlite`; uploads: `local-data/media`. **Do not upload these to GitHub.**
+- **Platform owner:** create/suspend real hotel accounts, manage hotels and provision hotel staff.
+- **Hotel manager:** edit rooms, room types, hotel photographs, menus, prices, amenities, activities, branding and access permissions.
+- **Guest app:** time-limited personal QR, food deliveries to room/pool/lobby/beach/restaurant/garden, service requests, activities, chat and guest charge history.
+- **Reception:** live activity feed while the page is open, status updates, room history search and checkout per stay.
+- **Checkout:** open/paid/void charges, delivery details, free activities and complimentary requests, external payment record with confirmation and receipt reference, and automatic guest-pass closure after collection. An empty account can be closed without recording payment.
 
 ## Deploy to Railway
 
-See [DEPLOY_RAILWAY_HE.md](DEPLOY_RAILWAY_HE.md) for steps tailored to the existing Railway service, and [.env.example](.env.example) for variables.
+Read `UPGRADE_v4_HE.md`. The app needs a persistent `/data` Volume, `STAYOS_PLATFORM_DB=/data/platform.sqlite`, `STAYOS_MEDIA_DIR=/data/media`, a unique `STAYOS_ADMIN_PASSWORD`, and `STAYOS_COOKIE_SECURE=1`. **Back up your current `/data/platform.sqlite` first.** Use one replica while using SQLite.
 
-**New v3 database:** `STAYOS_PLATFORM_DB=/data/platform.sqlite`. Previous v2 `stay.db` stays untouched; v3 does **not** migrate the old data automatically. Take a volume backup first.
+## Tests
 
-Only run **one app replica** against the SQLite database. For larger-scale deployments move to managed PostgreSQL, and include automated backups, restore testing, monitoring, a notification queue and a full security/privacy review.
-
-## Run tests
-
-```bash
-python -m pip install -r requirements-dev.txt
+```
+pip install -r requirements-dev.txt
 python tests/test_platform.py
-python tests/test_browser.py
+python tests/test_notifications.py
+python tests/test_guest_flows.py
+python tests/test_room_history.py
+python tests/test_real_pilot_checkout.py
+python tests/test_checkout_browser.py
 ```
 
-The browser test uses Chromium from `/usr/bin/chromium` and a local HTTP test proxy to accommodate this build environment; adjust if running elsewhere. The original API suite covers 41 integration cases, with additional notification and interactive guest-flow regressions, including view-only versus editing, cross-hotel access checks, reservations, charges, and access revocation. A Chromium UI smoke test passed on desktop/mobile-width layouts, but no real mobile device installation or full accessibility audit has been performed.
+The suite uses disposable test hotels. Some tests explicitly enable concept data for regression; this does **not** seed the deployed app.
 
-## Security & limitations
+## Not yet suitable for unrestricted real guest rollout
 
-- Store `STAYOS_ADMIN_PASSWORD` only in Railway Variables. The owner username is `owner`.
-- The initial owner password is read **on first creation** of the v3 database; use the UI's Change password action to rotate it afterward.
-- Turn the GitHub repo **private** before uploading business code. Never commit live guest data, volumes, local `.env`, payment details or passwords.
-- QR links are private bearer credentials. Share only with the appropriate room guest and revoke at checkout.
-- Uploaded images are public hotel marketing assets, not a place to upload sensitive guest records.
-- Marking a folio paid is a record of payment taken externally, **not** charging a card or integrating with a hotel PMS.
-- Dashboard uses polling when open, not mobile push notifications. Domain-specific privacy notices, backups, support procedures and MFA are not included.
-- Content saves publish immediately. Draft approval/rollback is not implemented.
+A technical pilot is not an independent security certification. Before storing real guest data, complete a security/privacy review, staff onboarding, automated off-site backups and restore testing, monitoring, load testing, accessibility review, incident response and operational acceptance testing on physical phones. Browser notifications require the receptionist page open; offline push is not supported. The system is not a hotel PMS, payment processor, fiscal invoice provider or replacement for hotel accounting.

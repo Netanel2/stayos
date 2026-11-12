@@ -82,7 +82,7 @@ def run():
    assert len(folio)==1 and folio[0]['amount_cents']==orders[0]['total_cents']
    print('PASS guest food order works in mobile; room folio and delivery instructions saved')
    admin.evaluate('checkAlerts()')
-   assert 'new' in admin.locator('#receptionLive').inner_text().lower()
+   assert 'pending' in admin.locator('#receptionLive').inner_text().lower()
    admin.locator('#receptionLive').click()
    assert admin.locator('.modal').get_by_text('Food order',exact=False).count()>0
    admin.locator('button[data-action=closeModal]').first.click()
